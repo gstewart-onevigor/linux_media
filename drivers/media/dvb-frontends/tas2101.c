@@ -184,15 +184,19 @@ static int tas2101_read_signal_strength(struct dvb_frontend *fe,
 	u16 *signal_strength)
 {
 	struct tas2101_priv *priv = fe->demodulator_priv;
+	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	int ret, i;
-	long val, dbm_raw;
+	long val;
+	u16 agc_dBuV, agc_out;
 	u8 buf[2];
+
 
 	ret = tas2101_rdm(priv, SIGSTR_0, buf, 2);
 	if (ret)
 		return ret;
 
-	dbm_raw = (((u16)buf[1] & 0x0f) << 8) | buf[0];
+	agc_out = (((buf[1] & 0xf0)>>4) << 8) | buf[0];
+#if 0
 
 	for (i = 0; i < ARRAY_SIZE(tas2101_dbmtable) - 1; i++)
 		if (tas2101_dbmtable[i].raw < dbm_raw)
@@ -209,6 +213,34 @@ static int tas2101_read_signal_strength(struct dvb_frontend *fe,
 
 		*signal_strength = (u16)val;
 	}
+#endif
+
+	if(agc_out>2787){agc_dBuV=0;}
+
+    if((agc_out>2094)&&(agc_out<=2787)){agc_dBuV=170+(2787-agc_out)*10/46;}
+
+	if((agc_out>1773)&&(agc_out<=2094)){agc_dBuV=320+(2094-agc_out)*10/27;}
+
+	if((agc_out>1005)&&(agc_out<=1773)){agc_dBuV=440+(1773-agc_out)*10/26;}
+
+    if((agc_out>851)&&(agc_out<=1005)){agc_dBuV=730+(1005-agc_out)*10/17;}
+
+    if((agc_out>676)&&(agc_out<=851)){agc_dBuV=820+(851-agc_out)*10/10;}
+
+    if(agc_out<=676){agc_dBuV=999;}
+	
+	if(fe->ops.tuner_ops.get_rf_strength)
+		fe->ops.tuner_ops.get_rf_strength(fe, &agc_dBuV);
+			
+
+	c->strength.len = 1;
+	//c->strength.stat[0].scale = FE_SCALE_DECIBEL;
+	//c->strength.stat[0].uvalue = agc_dBuV;
+
+//	*signal_strength  = agc_dBuV;
+
+	*signal_strength = c->strength.stat[0].scale == FE_SCALE_DECIBEL ? ((106000 + (s32)c->strength.stat[0].svalue) / 1000) * 656 : 0;
+	 c->strength.stat[0].svalue= c->strength.stat[0].svalue/10;
 
 	dev_dbg(&priv->i2c->dev, "%s() strength = 0x%04x\n",
 		__func__, *signal_strength);
