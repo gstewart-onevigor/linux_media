@@ -32,7 +32,7 @@
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 7, 0)
 #if IS_ENABLED(CONFIG_I2C_MUX)
-#define TAS2101_USE_I2C_MUX
+// #define TAS2101_USE_I2C_MUX
 #endif
 #endif
 
@@ -144,6 +144,133 @@ static int tas2101_wrtable(struct tas2101_priv *priv,
 	return 0;
 }
 
+static int tas2101_read_status(struct dvb_frontend *fe, enum fe_status *status)
+{
+	struct tas2101_priv *priv = fe->demodulator_priv;
+	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
+	int ret, i;
+	long val;
+	u16 raw;
+	u8 buf[2];
+
+	*status = 0;
+
+	ret = tas2101_rd(priv, DEMOD_STATUS, buf);
+	if (ret)
+		return ret;
+
+	buf[0] &= DEMOD_STATUS_MASK;
+	if (buf[0] == DEMOD_LOCKED) {
+		*status = FE_HAS_SIGNAL | FE_HAS_CARRIER |
+			FE_HAS_VITERBI | FE_HAS_SYNC | FE_HAS_LOCK;
+
+		ret = tas2101_rd(priv, REG_04, buf);
+		if (ret)
+			return ret;
+		if (buf[0] & 0x08)
+			ret = tas2101_wr(priv, REG_04, buf[0] & ~0x08);
+	}
+
+	val = -1000;
+	c->strength.len = 1;
+	c->strength.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
+
+	/* Read signal strength */
+	ret = tas2101_rdm(priv, SIGSTR_0, buf, 2);
+	if (ret)
+		return ret;
+
+	raw = (((u16)buf[1] & 0xf0) << 4) | buf[0];
+
+	for (i = 0; i < ARRAY_SIZE(tas2101_dbmtable) - 1; i++)
+		if (tas2101_dbmtable[i].raw < raw)
+			break;
+	if( i == 0 )
+		val = tas2101_dbmtable[i].dbm;
+	else
+	{
+		/* linear interpolation between two calibrated values */
+		val = (raw - tas2101_dbmtable[i].raw) * tas2101_dbmtable[i-1].dbm;
+		val += (tas2101_dbmtable[i-1].raw - raw) * tas2101_dbmtable[i].dbm;
+		val /= (tas2101_dbmtable[i-1].raw - tas2101_dbmtable[i].raw);
+	}
+
+	c->strength.len = 2;
+	c->strength.stat[0].scale = FE_SCALE_DECIBEL;
+	c->strength.stat[0].svalue = val *100;
+
+	c->strength.stat[1].scale = FE_SCALE_RELATIVE;
+	c->strength.stat[1].uvalue = (100 + val/10) * 656;
+
+	val = 0;
+	c->cnr.len = 1;
+	c->cnr.stat[0].scale = FE_SCALE_NOT_AVAILABLE;
+
+	/* Read snr */
+	ret = tas2101_rdm(priv, SNR_0, buf, 2);
+	if (ret)
+		return ret;
+
+	raw = (((u16)buf[1] & 0x0f) << 8) | buf[0];
+
+	for (i = 0; i < ARRAY_SIZE(tas2101_snrtable) - 1; i++)
+		if (tas2101_snrtable[i].raw < raw)
+			break;
+
+	if( i == 0 )
+		val = tas2101_snrtable[i].snr;
+	else
+	{
+		/* linear interpolation between two calibrated values */
+		val = (raw - tas2101_snrtable[i].raw) * tas2101_snrtable[i-1].snr;
+		val += (tas2101_snrtable[i-1].raw - raw) * tas2101_snrtable[i].snr;
+		val /= (tas2101_snrtable[i-1].raw - tas2101_snrtable[i].raw);
+	}
+
+	c->cnr.len = 2;
+	c->cnr.stat[0].scale = FE_SCALE_DECIBEL;
+	c->cnr.stat[0].uvalue = 100 * (s64) val;
+
+	c->cnr.stat[1].scale = FE_SCALE_RELATIVE;
+	c->cnr.stat[1].uvalue = (u16) val * 328;
+	if (c->cnr.stat[1].uvalue > 0xffff)
+		c->cnr.stat[1].uvalue = 0xffff;
+
+	return ret;
+}
+
+static int tas2101_read_signal_strength(struct dvb_frontend *fe,
+	u16 *strength)
+{
+	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
+	int i;
+
+	*strength = 0;
+	for (i=0; i < p->strength.len; i++)
+	{
+		if (p->strength.stat[i].scale == FE_SCALE_RELATIVE)
+			*strength = (u16)p->strength.stat[i].uvalue;
+		else if (p->strength.stat[i].scale == FE_SCALE_DECIBEL)
+			*strength = ((100000 + (s32)p->strength.stat[i].svalue)/1000) * 656;
+	}
+
+	return 0;
+}
+
+
+static int tas2101_read_snr(struct dvb_frontend *fe, u16 *snr)
+{
+	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
+	int i;
+
+	*snr = 0;
+	for (i=0; i < p->cnr.len; i++)
+		if (p->cnr.stat[i].scale == FE_SCALE_RELATIVE)
+		  *snr = (u16)p->cnr.stat[i].uvalue;
+
+	return 0;
+}
+
 static int tas2101_read_ber(struct dvb_frontend *fe, u32 *ber)
 {
 	struct tas2101_priv *priv = fe->demodulator_priv;
@@ -180,331 +307,6 @@ static int tas2101_read_ber(struct dvb_frontend *fe, u32 *ber)
 	return 0;
 }
 
-struct tas2101_dbmtable_pair dbm_raw_tab_1030000[] = 
-{
-	{ 65, 0x06B7 },
-	{ 64, 0x0694 },
-	{ 63, 0x0658 },
-	{ 62, 0x06D6 },
-	{ 61, 0x05F4 },
-	{ 60, 0x05B5 },
-
-	{ 59, 0x0663 },
-	{ 58, 0x05D4 },
-	{ 57, 0x0594 },
-	{ 56, 0x0559 },
-	{ 55, 0x0529 },
-	{ 54, 0x04FC },
-	{ 53, 0x0570 },
-	{ 52, 0x0534 },
-	{ 51, 0x0501 },
-	{ 50, 0x04DA },
-
-	{ 49, 0x04B8 },
-	{ 48, 0x0496 },
-	{ 47, 0x047A },
-	{ 46, 0x045F },
-	{ 45, 0x044C },
-	{ 44, 0x0434 },
-	{ 43, 0x0426 },
-	{ 42, 0x0416 },
-	{ 41, 0x0408 },
-	{ 40, 0x03F9 },
-
-	{ 39, 0x03E9 },
-	{ 38, 0x03DB },
-	{ 37, 0x03CC },
-	{ 36, 0x03BC },
-	{ 35, 0x03AB },
-	{ 34, 0x039B },
-	{ 33, 0x038D },
-	{ 32, 0x0379 },
-	{ 31, 0x036A },
-	{ 30, 0x035A },
-
-	{ 29, 0x034A },
-	{ 28, 0x033A },
-	{ 27, 0x032A },
-	{ 26, 0x02F8 },
-	{ 25, 0x02ED },
-	{ 24, 0x02DC },
-	{ 23, 0x02CF },
-	{ 22, 0x02C1 },
-	{ 21, 0x02B6 },
-	{ 20, 0x02A9 },
-
-	{ 19, 0x029A },
-	{ 18, 0x0288 },
-	{ 17, 0x027E },
-	{ 16, 0x026D },
-	{ 15, 0x025F }
-};
-
-struct tas2101_dbmtable_pair dbm_raw_tab_1090000[] = 
-{
-	{ 65, 0x05D1 },
-	{ 64, 0x05A9 },
-	{ 63, 0x057B },
-	{ 62, 0x0544 },
-	{ 61, 0x0508 },
-	{ 60, 0x0581 },
-
-	{ 59, 0x0573 },
-	{ 58, 0x053D },
-	{ 57, 0x04FC },
-	{ 56, 0x04BD },
-	{ 55, 0x0489 },
-	{ 54, 0x045B },
-	{ 53, 0x0434 },
-	{ 52, 0x048F },
-	{ 51, 0x0460 },
-	{ 50, 0x0435 },
-
-	{ 49, 0x0410 },
-	{ 48, 0x03F2 },
-	{ 47, 0x03D8 },
-	{ 46, 0x03BE },
-	{ 45, 0x03AB },
-	{ 44, 0x0398 },
-	{ 43, 0x0387 },
-	{ 42, 0x0375 },
-	{ 41, 0x0369 },
-	{ 40, 0x035A },
-
-	{ 39, 0x034D },
-	{ 38, 0x033F },
-	{ 37, 0x0330 },
-	{ 36, 0x0321 },
-	{ 35, 0x0313 },
-	{ 34, 0x0303 },
-	{ 33, 0x02F3 },
-	{ 32, 0x02E7 },
-	{ 31, 0x02D6 },
-	{ 30, 0x02C9 },
-
-	{ 29, 0x02BD },
-	{ 28, 0x02AD },
-	{ 27, 0x02A0 },
-	{ 26, 0x0292 },
-	{ 25, 0x0287 },
-	{ 24, 0x025F },
-	{ 23, 0x0255 },
-	{ 22, 0x024B },
-	{ 21, 0x0240 },
-	{ 20, 0x0237 },
-
-	{ 19, 0x022C },
-	{ 18, 0x0221 },
-	{ 17, 0x0218 },
-	{ 16, 0x020D },
-	{ 15, 0x0201 }
-};
-
-struct tas2101_dbmtable_pair dbm_raw_tab_1070000[] = 
-{
-	{ 65, 0x06CB },
-	{ 64, 0x0699 },
-	{ 63, 0x0664 },
-	{ 62, 0x062F },
-	{ 61, 0x05F3 },
-	{ 60, 0x06A5 },
-
-	{ 59, 0x0607 },
-	{ 58, 0x05D7 },
-	{ 57, 0x05A0 },
-	{ 56, 0x0574 },
-	{ 55, 0x0548 },
-	{ 54, 0x051C },
-	{ 53, 0x04F3 },
-	{ 52, 0x055C },
-	{ 51, 0x0532 },
-	{ 50, 0x050A },
-
-	{ 49, 0x04E1 },
-	{ 48, 0x04C3 },
-	{ 47, 0x04A7 },
-	{ 46, 0x048E },
-	{ 45, 0x0475 },
-	{ 44, 0x045F },
-	{ 43, 0x044E },
-	{ 42, 0x0441 },
-	{ 41, 0x042E },
-	{ 40, 0x0420 },
-
-	{ 39, 0x0413 },
-	{ 38, 0x0404 },
-	{ 37, 0x03F4 },
-	{ 36, 0x03E5 },
-	{ 35, 0x03D4 },
-	{ 34, 0x03C5 },
-	{ 33, 0x03B4 },
-	{ 32, 0x03A5 },
-	{ 31, 0x0395 },
-	{ 30, 0x0386 },
-
-	{ 29, 0x0376 },
-	{ 28, 0x036D },
-	{ 27, 0x0338 },
-	{ 26, 0x032D },
-	{ 25, 0x0320 },
-	{ 24, 0x0314 },
-	{ 23, 0x030A },
-	{ 22, 0x02FE },
-	{ 21, 0x02F1 },
-	{ 20, 0x02E6 },
-
-	{ 19, 0x02DB },
-	{ 18, 0x02D0 },
-	{ 17, 0x02C4 },
-	{ 16, 0x02BA },
-	{ 15, 0x02AF }
-};
-
-static int tas2101_read_signal_strength(struct dvb_frontend *fe,
-	u16 *signal_strength)
-{
-	struct tas2101_priv *priv = fe->demodulator_priv;
-	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
-	struct tas2101_dbmtable_pair *dbm_raw_tab;
-	int dbm_raw_tab_length;
-	int ret, i;
-	long val;
-	u16 agc_dBuV, agc_out;
-	u8 buf[2];
-	s64 svalue;
-	u16 delta;
-
-	svalue = 0;
-
-	ret = tas2101_rdm(priv, SIGSTR_0, buf, 2);
-	if (ret)
-		return ret;
-
-	agc_out = (((buf[1] & 0xf0)>>4) << 8) | buf[0];
-#if 0
-
-	for (i = 0; i < ARRAY_SIZE(tas2101_dbmtable) - 1; i++)
-		if (tas2101_dbmtable[i].raw < dbm_raw)
-			break;
-
-	if( i == 0 )
-		*signal_strength = tas2101_dbmtable[i].dbm;
-	else
-	{
-		/* linear interpolation between two calibrated values */
-		val = (dbm_raw - tas2101_dbmtable[i].raw) * tas2101_dbmtable[i-1].dbm;
-		val += (tas2101_dbmtable[i-1].raw - dbm_raw) * tas2101_dbmtable[i].dbm;
-		val /= (tas2101_dbmtable[i-1].raw - tas2101_dbmtable[i].raw);
-
-		*signal_strength = (u16)val;
-	}
-#endif
-
-	if(agc_out>2787){agc_dBuV=0;}
-
-    if((agc_out>2094)&&(agc_out<=2787)){agc_dBuV=170+(2787-agc_out)*10/46;}
-
-	if((agc_out>1773)&&(agc_out<=2094)){agc_dBuV=320+(2094-agc_out)*10/27;}
-
-	if((agc_out>1005)&&(agc_out<=1773)){agc_dBuV=440+(1773-agc_out)*10/26;}
-
-    if((agc_out>851)&&(agc_out<=1005)){agc_dBuV=730+(1005-agc_out)*10/17;}
-
-    if((agc_out>676)&&(agc_out<=851)){agc_dBuV=820+(851-agc_out)*10/10;}
-
-    if(agc_out<=676){agc_dBuV=999;}
-	
-	if(fe->ops.tuner_ops.get_rf_strength)
-		fe->ops.tuner_ops.get_rf_strength(fe, &agc_dBuV);
-			
-
-	c->strength.len = 1;
-	//c->strength.stat[0].scale = FE_SCALE_DECIBEL;
-	//c->strength.stat[0].uvalue = agc_dBuV;
-
-//	*signal_strength  = agc_dBuV;
-
-	*signal_strength = c->strength.stat[0].scale == FE_SCALE_DECIBEL ? ((106000 + (s32)c->strength.stat[0].svalue) / 1000) * 656 : 0;
-	c->strength.stat[0].svalue= c->strength.stat[0].svalue/10;
-
-	dbm_raw_tab = NULL;
-
-	/* override satellite signal strength values with lookup table (when available for the given frequency) */
-	if (fe->dtv_property_cache.frequency == 1030000) {
-		dbm_raw_tab = dbm_raw_tab_1030000;
-		dbm_raw_tab_length = ARRAY_SIZE(dbm_raw_tab_1030000);
-	}
-	else if (fe->dtv_property_cache.frequency == 1090000) {
-		dbm_raw_tab = dbm_raw_tab_1090000;
-		dbm_raw_tab_length = ARRAY_SIZE(dbm_raw_tab_1090000);
-	}
-	else if (fe->dtv_property_cache.frequency == 1070000) {
-		dbm_raw_tab = dbm_raw_tab_1070000;
-		dbm_raw_tab_length = ARRAY_SIZE(dbm_raw_tab_1070000);
-	}
-	/* TODO: additional frequencies */
-
-	if (dbm_raw_tab) {
-		delta = 0xffff;
-		svalue = 0;
-
-		for (i = 0; i < dbm_raw_tab_length - 1; i++) {
-			if (abs(dbm_raw_tab[i].raw - agc_out) < delta) {
-				delta = abs(dbm_raw_tab[i].raw - agc_out);
-				svalue = dbm_raw_tab[i].dbm * -1000;
-			}
-		}
-
-		c->strength.stat[0].scale = FE_SCALE_DECIBEL;
-		c->strength.stat[0].svalue = svalue;
-	}
-	 
-	dev_dbg(&priv->i2c->dev, "%s() strength = 0x%04x\n",
-		__func__, *signal_strength);
-	return 0;
-}
-
-static int tas2101_read_snr(struct dvb_frontend *fe, u16 *snr)
-{
-	struct tas2101_priv *priv = fe->demodulator_priv;
-	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
-	int ret, i;
-	long val;
-	u16 snr_raw;
-	u8 buf[2];
-
-	ret = tas2101_rdm(priv, SNR_0, buf, 2);
-	if (ret)
-		return ret;
-
-	snr_raw = (((u16)buf[1] & 0x0f) << 8) | buf[0];
-
-	for (i = 0; i < ARRAY_SIZE(tas2101_snrtable) - 1; i++)
-		if (tas2101_snrtable[i].raw < snr_raw)
-			break;
-
-	if( i == 0 )
-		val = tas2101_snrtable[i].snr;
-	else
-	{
-		/* linear interpolation between two calibrated values */
-		val = (snr_raw - tas2101_snrtable[i].raw) * tas2101_snrtable[i-1].snr;
-		val += (tas2101_snrtable[i-1].raw - snr_raw) * tas2101_snrtable[i].snr;
-		val /= (tas2101_snrtable[i-1].raw - tas2101_snrtable[i].raw);
-	}
-
-	c->cnr.len = 1;
-	c->cnr.stat[0].scale = FE_SCALE_DECIBEL;
-	c->cnr.stat[0].uvalue = 100 * (s64) val;
-
-	*snr = (u16) val * 328; /* 20dB = 100% */
-
-	dev_dbg(&priv->i2c->dev, "%s() snr = 0x%04x\n",
-		__func__, *snr);
-
-	return 0;
-}
-
 /* unimplemented */
 static int tas2101_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 {
@@ -512,37 +314,6 @@ static int tas2101_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 	dev_dbg(&priv->i2c->dev, "%s()\n", __func__);
 	*ucblocks = 0;
 	return 0;
-}
-
-static int tas2101_read_status(struct dvb_frontend *fe, enum fe_status *status)
-{
-	struct tas2101_priv *priv = fe->demodulator_priv;
-	int ret;
-	u8 reg;
-	u16 snr;
-
-	*status = 0;
-
-	ret = tas2101_rd(priv, DEMOD_STATUS, &reg);
-	if (ret)
-		return ret;
-
-	reg &= DEMOD_STATUS_MASK;
-	if (reg == DEMOD_LOCKED) {
-		*status = FE_HAS_SIGNAL | FE_HAS_CARRIER |
-			FE_HAS_VITERBI | FE_HAS_SYNC | FE_HAS_LOCK;
-
-		ret = tas2101_rd(priv, REG_04, &reg);
-		if (ret)
-			return ret;
-		if (reg & 0x08)
-			ret = tas2101_wr(priv, REG_04, reg & ~0x08);
-		
-		tas2101_read_snr(fe, &snr);
-	}
-
-	dev_dbg(&priv->i2c->dev, "%s() status = 0x%02x\n", __func__, *status);
-	return ret;
 }
 
 static void tas2101_spi_read(struct dvb_frontend *fe, struct ecp3_info *ecp3inf)
@@ -560,6 +331,26 @@ static void tas2101_spi_write(struct dvb_frontend *fe,struct ecp3_info *ecp3inf)
 	struct i2c_adapter *adapter = priv->i2c;
 	if (priv->cfg->write_properties)
 		priv->cfg->write_properties(adapter,ecp3inf->reg, ecp3inf->data);
+	return ;
+}
+
+static void tas2101_eeprom_read(struct dvb_frontend *fe, struct eeprom_info *eepinf)
+{
+	struct tas2101_priv *priv = fe->demodulator_priv;
+	struct i2c_adapter *adapter = priv->i2c;
+
+	if (priv->cfg->read_eeprom)
+		priv->cfg->read_eeprom(adapter,eepinf->reg, &(eepinf->data));
+	return ;
+}
+
+static void tas2101_eeprom_write(struct dvb_frontend *fe,struct eeprom_info *eepinf)
+{
+	struct tas2101_priv *priv = fe->demodulator_priv;
+	struct i2c_adapter *adapter = priv->i2c;
+
+	if (priv->cfg->write_eeprom)
+		priv->cfg->write_eeprom(adapter,eepinf->reg, eepinf->data);
 	return ;
 }
 
@@ -1095,7 +886,7 @@ static int tas2101_tune(struct dvb_frontend *fe, bool re_tune,
 	return tas2101_read_status(fe, status);
 }
 
-static int tas2101_get_algo(struct dvb_frontend *fe)
+static enum dvbfe_algo tas2101_get_algo(struct dvb_frontend *fe)
 {
 	return DVBFE_ALGO_HW;
 }
@@ -1155,8 +946,8 @@ static struct dvb_frontend_ops tas2101_ops = {
 
 	.spi_read			= tas2101_spi_read,
 	.spi_write			= tas2101_spi_write,
-
-
+	.eeprom_read		= tas2101_eeprom_read,
+	.eeprom_write		= tas2101_eeprom_write,
 };
 
 MODULE_DESCRIPTION("DVB Frontend module for Tmax TAS2101");
