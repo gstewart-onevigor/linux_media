@@ -605,7 +605,7 @@ int register_cdrom(struct gendisk *disk, struct cdrom_device_info *cdi)
 	disk->cdi = cdi;
 
 	ENSURE(cdo, drive_status, CDC_DRIVE_STATUS);
-	if (cdo->check_events == NULL && cdo->media_changed == NULL)
+	if (cdo->check_events == NULL)
 		WARN_ON_ONCE(cdo->capability & (CDC_MEDIA_CHANGED | CDC_SELECT_DISC));
 	ENSURE(cdo, tray_move, CDC_CLOSE_TRAY | CDC_OPEN_TRAY);
 	ENSURE(cdo, lock_door, CDC_LOCK);
@@ -629,7 +629,7 @@ int register_cdrom(struct gendisk *disk, struct cdrom_device_info *cdi)
 	if (CDROM_CAN(CDC_MRW_W))
 		cdi->exit = cdrom_mrw_exit;
 
-	if (cdi->disk)
+	if (cdi->ops->read_cdda_bpc)
 		cdi->cdda_method = CDDA_BPC_FULL;
 	else
 		cdi->cdda_method = CDDA_OLD;
@@ -1419,8 +1419,6 @@ static int cdrom_select_disc(struct cdrom_device_info *cdi, int slot)
 
 	if (cdi->ops->check_events)
 		cdi->ops->check_events(cdi, 0, slot);
-	else
-		cdi->ops->media_changed(cdi, slot);
 
 	if (slot == CDSL_NONE) {
 		/* set media changed bits, on both queues */
@@ -1517,13 +1515,10 @@ int media_changed(struct cdrom_device_info *cdi, int queue)
 		return ret;
 
 	/* changed since last call? */
-	if (cdi->ops->check_events) {
-		BUG_ON(!queue);	/* shouldn't be called from VFS path */
-		cdrom_update_events(cdi, DISK_EVENT_MEDIA_CHANGE);
-		changed = cdi->ioctl_events & DISK_EVENT_MEDIA_CHANGE;
-		cdi->ioctl_events = 0;
-	} else
-		changed = cdi->ops->media_changed(cdi, CDSL_CURRENT);
+	BUG_ON(!queue);	/* shouldn't be called from VFS path */
+	cdrom_update_events(cdi, DISK_EVENT_MEDIA_CHANGE);
+	changed = cdi->ioctl_events & DISK_EVENT_MEDIA_CHANGE;
+	cdi->ioctl_events = 0;
 
 	if (changed) {
 		cdi->mc_flags = 0x3;    /* set bit on both queues */
@@ -1533,18 +1528,6 @@ int media_changed(struct cdrom_device_info *cdi, int queue)
 
 	cdi->mc_flags &= ~mask;         /* clear bit */
 	return ret;
-}
-
-int cdrom_media_changed(struct cdrom_device_info *cdi)
-{
-	/* This talks to the VFS, which doesn't like errors - just 1 or 0.  
-	 * Returning "0" is always safe (media hasn't been changed). Do that 
-	 * if the low-level cdrom driver dosn't support media changed. */ 
-	if (cdi == NULL || cdi->ops->media_changed == NULL)
-		return 0;
-	if (!CDROM_CAN(CDC_MEDIA_CHANGED))
-		return 0;
-	return media_changed(cdi, 0);
 }
 
 /* Requests to the low-level drivers will /always/ be done in the
@@ -2176,81 +2159,26 @@ static int cdrom_read_cdda_old(struct cdrom_device_info *cdi, __u8 __user *ubuf,
 static int cdrom_read_cdda_bpc(struct cdrom_device_info *cdi, __u8 __user *ubuf,
 			       int lba, int nframes)
 {
-	struct request_queue *q = cdi->disk->queue;
-	struct request *rq;
-	struct scsi_request *req;
-	struct bio *bio;
-	unsigned int len;
+	int max_frames = (queue_max_sectors(cdi->disk->queue) << 9) /
+			  CD_FRAMESIZE_RAW;
 	int nr, ret = 0;
-
-	if (!q)
-		return -ENXIO;
-
-	if (!blk_queue_scsi_passthrough(q)) {
-		WARN_ONCE(true,
-			  "Attempt read CDDA info through a non-SCSI queue\n");
-		return -EINVAL;
-	}
 
 	cdi->last_sense = 0;
 
 	while (nframes) {
-		nr = nframes;
 		if (cdi->cdda_method == CDDA_BPC_SINGLE)
 			nr = 1;
-		if (nr * CD_FRAMESIZE_RAW > (queue_max_sectors(q) << 9))
-			nr = (queue_max_sectors(q) << 9) / CD_FRAMESIZE_RAW;
+		else
+			nr = min(nframes, max_frames);
 
-		len = nr * CD_FRAMESIZE_RAW;
-
-		rq = blk_get_request(q, REQ_OP_SCSI_IN, 0);
-		if (IS_ERR(rq)) {
-			ret = PTR_ERR(rq);
-			break;
-		}
-		req = scsi_req(rq);
-
-		ret = blk_rq_map_user(q, rq, NULL, ubuf, len, GFP_KERNEL);
-		if (ret) {
-			blk_put_request(rq);
-			break;
-		}
-
-		req->cmd[0] = GPCMD_READ_CD;
-		req->cmd[1] = 1 << 2;
-		req->cmd[2] = (lba >> 24) & 0xff;
-		req->cmd[3] = (lba >> 16) & 0xff;
-		req->cmd[4] = (lba >>  8) & 0xff;
-		req->cmd[5] = lba & 0xff;
-		req->cmd[6] = (nr >> 16) & 0xff;
-		req->cmd[7] = (nr >>  8) & 0xff;
-		req->cmd[8] = nr & 0xff;
-		req->cmd[9] = 0xf8;
-
-		req->cmd_len = 12;
-		rq->timeout = 60 * HZ;
-		bio = rq->bio;
-
-		blk_execute_rq(q, cdi->disk, rq, 0);
-		if (scsi_req(rq)->result) {
-			struct scsi_sense_hdr sshdr;
-
-			ret = -EIO;
-			scsi_normalize_sense(req->sense, req->sense_len,
-					     &sshdr);
-			cdi->last_sense = sshdr.sense_key;
-		}
-
-		if (blk_rq_unmap_user(bio))
-			ret = -EFAULT;
-		blk_put_request(rq);
-
+		ret = cdi->ops->read_cdda_bpc(cdi, ubuf, lba, nr,
+					      &cdi->last_sense);
 		if (ret)
 			break;
 
 		nframes -= nr;
 		lba += nr;
-		ubuf += len;
+		ubuf += (nr * CD_FRAMESIZE_RAW);
 	}
 
 	return ret;
@@ -3013,13 +2941,15 @@ static noinline int mmc_ioctl_cdrom_read_data(struct cdrom_device_info *cdi,
 		 * SCSI-II devices are not required to support
 		 * READ_CD, so let's try switching block size
 		 */
-		/* FIXME: switch back again... */
-		ret = cdrom_switch_blocksize(cdi, blocksize);
-		if (ret)
-			goto out;
+		if (blocksize != CD_FRAMESIZE) {
+			ret = cdrom_switch_blocksize(cdi, blocksize);
+			if (ret)
+				goto out;
+		}
 		cgc->sshdr = NULL;
 		ret = cdrom_read_cd(cdi, cgc, lba, blocksize, 1);
-		ret |= cdrom_switch_blocksize(cdi, blocksize);
+		if (blocksize != CD_FRAMESIZE)
+			ret |= cdrom_switch_blocksize(cdi, CD_FRAMESIZE);
 	}
 	if (!ret && copy_to_user(arg, cgc->buffer, blocksize))
 		ret = -EFAULT;
@@ -3372,13 +3302,6 @@ int cdrom_ioctl(struct cdrom_device_info *cdi, struct block_device *bdev,
 	void __user *argp = (void __user *)arg;
 	int ret;
 
-	/*
-	 * Try the generic SCSI command ioctl's first.
-	 */
-	ret = scsi_cmd_blk_ioctl(bdev, mode, cmd, argp);
-	if (ret != -ENOTTY)
-		return ret;
-
 	switch (cmd) {
 	case CDROMMULTISESSION:
 		return cdrom_ioctl_multisession(cdi, argp);
@@ -3464,7 +3387,6 @@ EXPORT_SYMBOL(unregister_cdrom);
 EXPORT_SYMBOL(cdrom_open);
 EXPORT_SYMBOL(cdrom_release);
 EXPORT_SYMBOL(cdrom_ioctl);
-EXPORT_SYMBOL(cdrom_media_changed);
 EXPORT_SYMBOL(cdrom_number_of_slots);
 EXPORT_SYMBOL(cdrom_mode_select);
 EXPORT_SYMBOL(cdrom_mode_sense);

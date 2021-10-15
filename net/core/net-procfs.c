@@ -10,9 +10,6 @@
 #define get_offset(x) ((x) & ((1 << BUCKET_SPACE) - 1))
 #define set_bucket_offset(b, o) ((b) << BUCKET_SPACE | (o))
 
-extern struct list_head ptype_all __read_mostly;
-extern struct list_head ptype_base[PTYPE_HASH_SIZE] __read_mostly;
-
 static inline struct net_device *dev_from_same_bucket(struct seq_file *seq, loff_t *pos)
 {
 	struct net *net = seq_file_net(seq);
@@ -80,8 +77,8 @@ static void dev_seq_printf_stats(struct seq_file *seq, struct net_device *dev)
 	struct rtnl_link_stats64 temp;
 	const struct rtnl_link_stats64 *stats = dev_get_stats(dev, &temp);
 
-	seq_printf(seq, "%6s: %7llu %7llu %4llu %4llu %4llu %5llu %10llu %9llu "
-		   "%8llu %7llu %4llu %4llu %4llu %5llu %7llu %10llu\n",
+	seq_printf(seq, "%9s: %16llu %12llu %4llu %6llu %4llu %5llu %10llu %9llu "
+		   "%16llu %12llu %4llu %6llu %4llu %5llu %7llu %10llu\n",
 		   dev->name, stats->rx_bytes, stats->rx_packets,
 		   stats->rx_errors,
 		   stats->rx_dropped + stats->rx_missed_errors,
@@ -106,14 +103,20 @@ static void dev_seq_printf_stats(struct seq_file *seq, struct net_device *dev)
 static int dev_seq_show(struct seq_file *seq, void *v)
 {
 	if (v == SEQ_START_TOKEN)
-		seq_puts(seq, "Inter-|   Receive                            "
-			      "                    |  Transmit\n"
-			      " face |bytes    packets errs drop fifo frame "
-			      "compressed multicast|bytes    packets errs "
-			      "drop fifo colls carrier compressed\n");
+		seq_puts(seq, "Interface|                            Receive                   "
+			      "                    |                                 Transmit\n"
+			      "         |            bytes      packets errs   drop fifo frame "
+			      "compressed multicast|            bytes      packets errs "
+			      "  drop fifo colls carrier compressed\n");
 	else
 		dev_seq_printf_stats(seq, v);
 	return 0;
+}
+
+static u32 softnet_backlog_len(struct softnet_data *sd)
+{
+	return skb_queue_len_lockless(&sd->input_pkt_queue) +
+	       skb_queue_len_lockless(&sd->process_queue);
 }
 
 static struct softnet_data *softnet_get_online(loff_t *pos)
@@ -159,12 +162,17 @@ static int softnet_seq_show(struct seq_file *seq, void *v)
 	rcu_read_unlock();
 #endif
 
+	/* the index is the CPU id owing this sd. Since offline CPUs are not
+	 * displayed, it would be othrwise not trivial for the user-space
+	 * mapping the data a specific CPU
+	 */
 	seq_printf(seq,
-		   "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+		   "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
 		   sd->processed, sd->dropped, sd->time_squeeze, 0,
 		   0, 0, 0, 0, /* was fastroute */
 		   0,	/* was cpu_collision */
-		   sd->received_rps, flow_limit_count);
+		   sd->received_rps, flow_limit_count,
+		   softnet_backlog_len(sd), (int)seq->index);
 	return 0;
 }
 
@@ -251,14 +259,14 @@ static int ptype_seq_show(struct seq_file *seq, void *v)
 	struct packet_type *pt = v;
 
 	if (v == SEQ_START_TOKEN)
-		seq_puts(seq, "Type Device      Function\n");
+		seq_puts(seq, "Type      Device      Function\n");
 	else if (pt->dev == NULL || dev_net(pt->dev) == seq_file_net(seq)) {
 		if (pt->type == htons(ETH_P_ALL))
 			seq_puts(seq, "ALL ");
 		else
 			seq_printf(seq, "%04x", ntohs(pt->type));
 
-		seq_printf(seq, " %-8s %ps\n",
+		seq_printf(seq, "      %-9s   %ps\n",
 			   pt->dev ? pt->dev->name : "", pt->func);
 	}
 
@@ -319,12 +327,14 @@ static int dev_mc_seq_show(struct seq_file *seq, void *v)
 	struct netdev_hw_addr *ha;
 	struct net_device *dev = v;
 
-	if (v == SEQ_START_TOKEN)
+	if (v == SEQ_START_TOKEN) {
+		seq_puts(seq, "Ifindex Interface Refcount Global_use Address\n");
 		return 0;
+	}
 
 	netif_addr_lock_bh(dev);
 	netdev_for_each_mc_addr(ha, dev) {
-		seq_printf(seq, "%-4d %-15s %-5d %-5d %*phN\n",
+		seq_printf(seq, "%-7d %-9s %-8d %-10d %*phN\n",
 			   dev->ifindex, dev->name,
 			   ha->refcount, ha->global_use,
 			   (int)dev->addr_len, ha->addr);

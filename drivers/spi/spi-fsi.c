@@ -12,6 +12,7 @@
 
 #define FSI_ENGID_SPI			0x23
 #define FSI_MBOX_ROOT_CTRL_8		0x2860
+#define  FSI_MBOX_ROOT_CTRL_8_SPI_MUX	 0xf0000000
 
 #define FSI2SPI_DATA0			0x00
 #define FSI2SPI_DATA1			0x04
@@ -24,11 +25,11 @@
 
 #define SPI_FSI_BASE			0x70000
 #define SPI_FSI_INIT_TIMEOUT_MS		1000
-#define SPI_FSI_MAX_TRANSFER_SIZE	2048
+#define SPI_FSI_MAX_RX_SIZE		8
+#define SPI_FSI_MAX_TX_SIZE		40
 
 #define SPI_FSI_ERROR			0x0
 #define SPI_FSI_COUNTER_CFG		0x1
-#define  SPI_FSI_COUNTER_CFG_LOOPS(x)	 (((u64)(x) & 0xffULL) << 32)
 #define SPI_FSI_CFG1			0x2
 #define SPI_FSI_CLOCK_CFG		0x3
 #define  SPI_FSI_CLOCK_CFG_MM_ENABLE	 BIT_ULL(32)
@@ -61,7 +62,7 @@
 #define  SPI_FSI_STATUS_RDR_OVERRUN	 BIT_ULL(62)
 #define  SPI_FSI_STATUS_RDR_FULL	 BIT_ULL(63)
 #define  SPI_FSI_STATUS_ANY_ERROR	 \
-	(SPI_FSI_STATUS_ERROR | SPI_FSI_STATUS_TDR_UNDERRUN | \
+	(SPI_FSI_STATUS_ERROR | \
 	 SPI_FSI_STATUS_TDR_OVERRUN | SPI_FSI_STATUS_RDR_UNDERRUN | \
 	 SPI_FSI_STATUS_RDR_OVERRUN)
 #define SPI_FSI_PORT_CTRL		0x9
@@ -76,6 +77,26 @@ struct fsi_spi_sequence {
 	int bit;
 	u64 data;
 };
+
+static int fsi_spi_check_mux(struct fsi_device *fsi, struct device *dev)
+{
+	int rc;
+	u32 root_ctrl_8;
+	__be32 root_ctrl_8_be;
+
+	rc = fsi_slave_read(fsi->slave, FSI_MBOX_ROOT_CTRL_8, &root_ctrl_8_be,
+			    sizeof(root_ctrl_8_be));
+	if (rc)
+		return rc;
+
+	root_ctrl_8 = be32_to_cpu(root_ctrl_8_be);
+	dev_dbg(dev, "Root control register 8: %08x\n", root_ctrl_8);
+	if ((root_ctrl_8 & FSI_MBOX_ROOT_CTRL_8_SPI_MUX) ==
+	     FSI_MBOX_ROOT_CTRL_8_SPI_MUX)
+		return 0;
+
+	return -ENOLINK;
+}
 
 static int fsi_spi_check_status(struct fsi_spi *ctx)
 {
@@ -205,69 +226,30 @@ static int fsi_spi_reset(struct fsi_spi *ctx)
 	if (rc)
 		return rc;
 
-	return fsi_spi_write_reg(ctx, SPI_FSI_CLOCK_CFG,
-				 SPI_FSI_CLOCK_CFG_RESET2);
+	rc = fsi_spi_write_reg(ctx, SPI_FSI_CLOCK_CFG,
+			       SPI_FSI_CLOCK_CFG_RESET2);
+	if (rc)
+		return rc;
+
+	return fsi_spi_write_reg(ctx, SPI_FSI_STATUS, 0ULL);
 }
 
-static int fsi_spi_sequence_add(struct fsi_spi_sequence *seq, u8 val)
+static void fsi_spi_sequence_add(struct fsi_spi_sequence *seq, u8 val)
 {
 	/*
 	 * Add the next byte of instruction to the 8-byte sequence register.
 	 * Then decrement the counter so that the next instruction will go in
-	 * the right place. Return the number of "slots" left in the sequence
-	 * register.
+	 * the right place. Return the index of the slot we just filled in the
+	 * sequence register.
 	 */
 	seq->data |= (u64)val << seq->bit;
 	seq->bit -= 8;
-
-	return ((64 - seq->bit) / 8) - 2;
 }
 
 static void fsi_spi_sequence_init(struct fsi_spi_sequence *seq)
 {
 	seq->bit = 56;
 	seq->data = 0ULL;
-}
-
-static int fsi_spi_sequence_transfer(struct fsi_spi *ctx,
-				     struct fsi_spi_sequence *seq,
-				     struct spi_transfer *transfer)
-{
-	int loops;
-	int idx;
-	int rc;
-	u8 len = min(transfer->len, 8U);
-	u8 rem = transfer->len % len;
-
-	loops = transfer->len / len;
-
-	if (transfer->tx_buf) {
-		idx = fsi_spi_sequence_add(seq,
-					   SPI_FSI_SEQUENCE_SHIFT_OUT(len));
-		if (rem)
-			rem = SPI_FSI_SEQUENCE_SHIFT_OUT(rem);
-	} else if (transfer->rx_buf) {
-		idx = fsi_spi_sequence_add(seq,
-					   SPI_FSI_SEQUENCE_SHIFT_IN(len));
-		if (rem)
-			rem = SPI_FSI_SEQUENCE_SHIFT_IN(rem);
-	} else {
-		return -EINVAL;
-	}
-
-	if (loops > 1) {
-		fsi_spi_sequence_add(seq, SPI_FSI_SEQUENCE_BRANCH(idx));
-
-		if (rem)
-			fsi_spi_sequence_add(seq, rem);
-
-		rc = fsi_spi_write_reg(ctx, SPI_FSI_COUNTER_CFG,
-				       SPI_FSI_COUNTER_CFG_LOOPS(loops - 1));
-		if (rc)
-			return rc;
-	}
-
-	return 0;
 }
 
 static int fsi_spi_transfer_data(struct fsi_spi *ctx,
@@ -350,7 +332,7 @@ static int fsi_spi_transfer_init(struct fsi_spi *ctx)
 	u64 status = 0ULL;
 	u64 wanted_clock_cfg = SPI_FSI_CLOCK_CFG_ECC_DISABLE |
 		SPI_FSI_CLOCK_CFG_SCK_NO_DEL |
-		FIELD_PREP(SPI_FSI_CLOCK_CFG_SCK_DIV, 4);
+		FIELD_PREP(SPI_FSI_CLOCK_CFG_SCK_DIV, 19);
 
 	end = jiffies + msecs_to_jiffies(SPI_FSI_INIT_TIMEOUT_MS);
 	do {
@@ -378,6 +360,10 @@ static int fsi_spi_transfer_init(struct fsi_spi *ctx)
 		}
 	} while (seq_state && (seq_state != SPI_FSI_STATUS_SEQ_STATE_IDLE));
 
+	rc = fsi_spi_write_reg(ctx, SPI_FSI_COUNTER_CFG, 0ULL);
+	if (rc)
+		return rc;
+
 	rc = fsi_spi_read_reg(ctx, SPI_FSI_CLOCK_CFG, &clock_cfg);
 	if (rc)
 		return rc;
@@ -396,18 +382,22 @@ static int fsi_spi_transfer_init(struct fsi_spi *ctx)
 static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 					struct spi_message *mesg)
 {
-	int rc = 0;
+	int rc;
 	u8 seq_slave = SPI_FSI_SEQUENCE_SEL_SLAVE(mesg->spi->chip_select + 1);
+	unsigned int len;
 	struct spi_transfer *transfer;
 	struct fsi_spi *ctx = spi_controller_get_devdata(ctlr);
+
+	rc = fsi_spi_check_mux(ctx->fsi, ctx->dev);
+	if (rc)
+		goto error;
 
 	list_for_each_entry(transfer, &mesg->transfers, transfer_list) {
 		struct fsi_spi_sequence seq;
 		struct spi_transfer *next = NULL;
 
 		/* Sequencer must do shift out (tx) first. */
-		if (!transfer->tx_buf ||
-		    transfer->len > SPI_FSI_MAX_TRANSFER_SIZE) {
+		if (!transfer->tx_buf || transfer->len > SPI_FSI_MAX_TX_SIZE) {
 			rc = -EINVAL;
 			goto error;
 		}
@@ -421,9 +411,13 @@ static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 		fsi_spi_sequence_init(&seq);
 		fsi_spi_sequence_add(&seq, seq_slave);
 
-		rc = fsi_spi_sequence_transfer(ctx, &seq, transfer);
-		if (rc)
-			goto error;
+		len = transfer->len;
+		while (len > 8) {
+			fsi_spi_sequence_add(&seq,
+					     SPI_FSI_SEQUENCE_SHIFT_OUT(8));
+			len -= 8;
+		}
+		fsi_spi_sequence_add(&seq, SPI_FSI_SEQUENCE_SHIFT_OUT(len));
 
 		if (!list_is_last(&transfer->transfer_list,
 				  &mesg->transfers)) {
@@ -431,7 +425,9 @@ static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 
 			/* Sequencer can only do shift in (rx) after tx. */
 			if (next->rx_buf) {
-				if (next->len > SPI_FSI_MAX_TRANSFER_SIZE) {
+				u8 shift;
+
+				if (next->len > SPI_FSI_MAX_RX_SIZE) {
 					rc = -EINVAL;
 					goto error;
 				}
@@ -439,10 +435,8 @@ static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 				dev_dbg(ctx->dev, "Sequence rx of %d bytes.\n",
 					next->len);
 
-				rc = fsi_spi_sequence_transfer(ctx, &seq,
-							       next);
-				if (rc)
-					goto error;
+				shift = SPI_FSI_SEQUENCE_SHIFT_IN(next->len);
+				fsi_spi_sequence_add(&seq, shift);
 			} else {
 				next = NULL;
 			}
@@ -476,30 +470,19 @@ error:
 
 static size_t fsi_spi_max_transfer_size(struct spi_device *spi)
 {
-	return SPI_FSI_MAX_TRANSFER_SIZE;
+	return SPI_FSI_MAX_RX_SIZE;
 }
 
 static int fsi_spi_probe(struct device *dev)
 {
 	int rc;
-	u32 root_ctrl_8;
 	struct device_node *np;
 	int num_controllers_registered = 0;
 	struct fsi_device *fsi = to_fsi_dev(dev);
 
-	/*
-	 * Check the SPI mux before attempting to probe. If the mux isn't set
-	 * then the SPI controllers can't access their slave devices.
-	 */
-	rc = fsi_slave_read(fsi->slave, FSI_MBOX_ROOT_CTRL_8, &root_ctrl_8,
-			    sizeof(root_ctrl_8));
+	rc = fsi_spi_check_mux(fsi, dev);
 	if (rc)
-		return rc;
-
-	if (!root_ctrl_8) {
-		dev_dbg(dev, "SPI mux not set, aborting probe.\n");
 		return -ENODEV;
-	}
 
 	for_each_available_child_of_node(dev->of_node, np) {
 		u32 base;
@@ -510,8 +493,10 @@ static int fsi_spi_probe(struct device *dev)
 			continue;
 
 		ctlr = spi_alloc_master(dev, sizeof(*ctx));
-		if (!ctlr)
+		if (!ctlr) {
+			of_node_put(np);
 			break;
+		}
 
 		ctlr->dev.of_node = np;
 		ctlr->num_chipselect = of_get_available_child_count(np) ?: 1;

@@ -527,8 +527,8 @@ static void test_skb_less_prog_attach(struct bpf_flow *skel, int tap_fd)
 
 	run_tests_skb_less(tap_fd, skel->maps.last_dissection);
 
-	err = bpf_prog_detach(prog_fd, BPF_FLOW_DISSECTOR);
-	CHECK(err, "bpf_prog_detach", "err %d errno %d\n", err, errno);
+	err = bpf_prog_detach2(prog_fd, 0, BPF_FLOW_DISSECTOR);
+	CHECK(err, "bpf_prog_detach2", "err %d errno %d\n", err, errno);
 }
 
 static void test_skb_less_link_create(struct bpf_flow *skel, int tap_fd)
@@ -541,7 +541,7 @@ static void test_skb_less_link_create(struct bpf_flow *skel, int tap_fd)
 		return;
 
 	link = bpf_program__attach_netns(skel->progs._dissect, net_fd);
-	if (CHECK(IS_ERR(link), "attach_netns", "err %ld\n", PTR_ERR(link)))
+	if (!ASSERT_OK_PTR(link, "attach_netns"))
 		goto out_close;
 
 	run_tests_skb_less(tap_fd, skel->maps.last_dissection);
@@ -591,7 +591,7 @@ void test_flow_dissector(void)
 		CHECK_ATTR(tattr.data_size_out != sizeof(flow_keys) ||
 			   err || tattr.retval != 1,
 			   tests[i].name,
-			   "err %d errno %d retval %d duration %d size %u/%lu\n",
+			   "err %d errno %d retval %d duration %d size %u/%zu\n",
 			   err, errno, tattr.retval, tattr.duration,
 			   tattr.data_size_out, sizeof(flow_keys));
 		CHECK_FLOW_KEYS(tests[i].name, flow_keys, tests[i].keys);

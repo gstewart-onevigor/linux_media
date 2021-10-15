@@ -27,7 +27,6 @@
 
 static const struct inode_operations afs_symlink_inode_operations = {
 	.get_link	= page_get_link,
-	.listxattr	= afs_listxattr,
 };
 
 static noinline void dump_vnode(struct afs_vnode *vnode, struct afs_vnode *parent_vnode)
@@ -103,13 +102,13 @@ static int afs_inode_init_from_status(struct afs_operation *op,
 
 	switch (status->type) {
 	case AFS_FTYPE_FILE:
-		inode->i_mode	= S_IFREG | status->mode;
+		inode->i_mode	= S_IFREG | (status->mode & S_IALLUGO);
 		inode->i_op	= &afs_file_inode_operations;
 		inode->i_fop	= &afs_file_operations;
 		inode->i_mapping->a_ops	= &afs_fs_aops;
 		break;
 	case AFS_FTYPE_DIR:
-		inode->i_mode	= S_IFDIR | status->mode;
+		inode->i_mode	= S_IFDIR |  (status->mode & S_IALLUGO);
 		inode->i_op	= &afs_dir_inode_operations;
 		inode->i_fop	= &afs_dir_file_operations;
 		inode->i_mapping->a_ops	= &afs_dir_aops;
@@ -165,9 +164,11 @@ static void afs_apply_status(struct afs_operation *op,
 {
 	struct afs_file_status *status = &vp->scb.status;
 	struct afs_vnode *vnode = vp->vnode;
+	struct inode *inode = &vnode->vfs_inode;
 	struct timespec64 t;
 	umode_t mode;
 	bool data_changed = false;
+	bool change_size = vp->set_size;
 
 	_enter("{%llx:%llu.%u} %s",
 	       vp->fid.vid, vp->fid.vnode, vp->fid.unique,
@@ -186,25 +187,25 @@ static void afs_apply_status(struct afs_operation *op,
 	}
 
 	if (status->nlink != vnode->status.nlink)
-		set_nlink(&vnode->vfs_inode, status->nlink);
+		set_nlink(inode, status->nlink);
 
 	if (status->owner != vnode->status.owner)
-		vnode->vfs_inode.i_uid = make_kuid(&init_user_ns, status->owner);
+		inode->i_uid = make_kuid(&init_user_ns, status->owner);
 
 	if (status->group != vnode->status.group)
-		vnode->vfs_inode.i_gid = make_kgid(&init_user_ns, status->group);
+		inode->i_gid = make_kgid(&init_user_ns, status->group);
 
 	if (status->mode != vnode->status.mode) {
-		mode = vnode->vfs_inode.i_mode;
+		mode = inode->i_mode;
 		mode &= ~S_IALLUGO;
-		mode |= status->mode;
-		WRITE_ONCE(vnode->vfs_inode.i_mode, mode);
+		mode |= status->mode & S_IALLUGO;
+		WRITE_ONCE(inode->i_mode, mode);
 	}
 
 	t = status->mtime_client;
-	vnode->vfs_inode.i_ctime = t;
-	vnode->vfs_inode.i_mtime = t;
-	vnode->vfs_inode.i_atime = t;
+	inode->i_mtime = t;
+	if (vp->update_ctime)
+		inode->i_ctime = op->ctime;
 
 	if (vnode->status.data_version != status->data_version)
 		data_changed = true;
@@ -213,11 +214,12 @@ static void afs_apply_status(struct afs_operation *op,
 
 	if (vp->dv_before + vp->dv_delta != status->data_version) {
 		if (test_bit(AFS_VNODE_CB_PROMISED, &vnode->flags))
-			pr_warn("kAFS: vnode modified {%llx:%llu} %llx->%llx %s\n",
+			pr_warn("kAFS: vnode modified {%llx:%llu} %llx->%llx %s (op=%x)\n",
 				vnode->fid.vid, vnode->fid.vnode,
 				(unsigned long long)vp->dv_before + vp->dv_delta,
 				(unsigned long long)status->data_version,
-				op->type ? op->type->name : "???");
+				op->type ? op->type->name : "???",
+				op->debug_id);
 
 		vnode->invalid_before = status->data_version;
 		if (vnode->status.type == AFS_FTYPE_DIR) {
@@ -226,6 +228,7 @@ static void afs_apply_status(struct afs_operation *op,
 		} else {
 			set_bit(AFS_VNODE_ZAP_DATA, &vnode->flags);
 		}
+		change_size = true;
 	} else if (vnode->status.type == AFS_FTYPE_DIR) {
 		/* Expected directory change is handled elsewhere so
 		 * that we can locally edit the directory and save on a
@@ -233,11 +236,22 @@ static void afs_apply_status(struct afs_operation *op,
 		 */
 		if (test_bit(AFS_VNODE_DIR_VALID, &vnode->flags))
 			data_changed = false;
+		change_size = true;
 	}
 
 	if (data_changed) {
-		inode_set_iversion_raw(&vnode->vfs_inode, status->data_version);
-		afs_set_i_size(vnode, status->size);
+		inode_set_iversion_raw(inode, status->data_version);
+
+		/* Only update the size if the data version jumped.  If the
+		 * file is being modified locally, then we might have our own
+		 * idea of what the size should be that's not the same as
+		 * what's on the server.
+		 */
+		if (change_size) {
+			afs_set_i_size(vnode, status->size);
+			inode->i_ctime = t;
+			inode->i_atime = t;
+		}
 	}
 }
 
@@ -267,32 +281,48 @@ void afs_vnode_commit_status(struct afs_operation *op, struct afs_vnode_param *v
 
 	_enter("");
 
-	ASSERTCMP(op->error, ==, 0);
-
 	write_seqlock(&vnode->cb_lock);
 
 	if (vp->scb.have_error) {
+		/* A YFS server will return this from RemoveFile2 and AFS and
+		 * YFS will return this from InlineBulkStatus.
+		 */
 		if (vp->scb.status.abort_code == VNOVNODE) {
 			set_bit(AFS_VNODE_DELETED, &vnode->flags);
 			clear_nlink(&vnode->vfs_inode);
 			__afs_break_callback(vnode, afs_cb_break_for_deleted);
+			op->flags &= ~AFS_OPERATION_DIR_CONFLICT;
 		}
-	} else {
-		if (vp->scb.have_status)
-			afs_apply_status(op, vp);
+	} else if (vp->scb.have_status) {
+		if (vp->speculative &&
+		    (test_bit(AFS_VNODE_MODIFYING, &vnode->flags) ||
+		     vp->dv_before != vnode->status.data_version))
+			/* Ignore the result of a speculative bulk status fetch
+			 * if it splits around a modification op, thereby
+			 * appearing to regress the data version.
+			 */
+			goto out;
+		afs_apply_status(op, vp);
 		if (vp->scb.have_cb)
 			afs_apply_callback(op, vp);
+	} else if (vp->op_unlinked && !(op->flags & AFS_OPERATION_DIR_CONFLICT)) {
+		drop_nlink(&vnode->vfs_inode);
+		if (vnode->vfs_inode.i_nlink == 0) {
+			set_bit(AFS_VNODE_DELETED, &vnode->flags);
+			__afs_break_callback(vnode, afs_cb_break_for_deleted);
+		}
 	}
 
+out:
 	write_sequnlock(&vnode->cb_lock);
 
-	if (op->error == 0 && vp->scb.have_status)
+	if (vp->scb.have_status)
 		afs_cache_permit(vnode, op->key, vp->cb_break_before, &vp->scb);
 }
 
 static void afs_fetch_status_success(struct afs_operation *op)
 {
-	struct afs_vnode_param *vp = &op->file[0];
+	struct afs_vnode_param *vp = &op->file[op->fetch_status.which];
 	struct afs_vnode *vnode = vp->vnode;
 	int ret;
 
@@ -306,10 +336,11 @@ static void afs_fetch_status_success(struct afs_operation *op)
 	}
 }
 
-static const struct afs_operation_ops afs_fetch_status_operation = {
+const struct afs_operation_ops afs_fetch_status_operation = {
 	.issue_afs_rpc	= afs_fs_fetch_status,
 	.issue_yfs_rpc	= yfs_fs_fetch_status,
 	.success	= afs_fetch_status_success,
+	.aborted	= afs_check_for_remote_deletion,
 };
 
 /*
@@ -398,7 +429,7 @@ static void afs_get_inode_cache(struct afs_vnode *vnode)
 	} __packed key;
 	struct afs_vnode_cache_aux aux;
 
-	if (vnode->status.type == AFS_FTYPE_DIR) {
+	if (vnode->status.type != AFS_FTYPE_FILE) {
 		vnode->cache = NULL;
 		return;
 	}
@@ -704,8 +735,8 @@ error_unlock:
 /*
  * read the attributes of an inode
  */
-int afs_getattr(const struct path *path, struct kstat *stat,
-		u32 request_mask, unsigned int query_flags)
+int afs_getattr(struct user_namespace *mnt_userns, const struct path *path,
+		struct kstat *stat, u32 request_mask, unsigned int query_flags)
 {
 	struct inode *inode = d_inode(path->dentry);
 	struct afs_vnode *vnode = AFS_FS_I(inode);
@@ -715,7 +746,10 @@ int afs_getattr(const struct path *path, struct kstat *stat,
 
 	do {
 		read_seqbegin_or_lock(&vnode->cb_lock, &seq);
-		generic_fillattr(inode, stat);
+		generic_fillattr(&init_user_ns, inode, stat);
+		if (test_bit(AFS_VNODE_SILLY_DELETED, &vnode->flags) &&
+		    stat->nlink > 0)
+			stat->nlink -= 1;
 	} while (need_seqretry(&vnode->cb_lock, seq));
 
 	done_seqretry(&vnode->cb_lock, seq);
@@ -785,49 +819,106 @@ void afs_evict_inode(struct inode *inode)
 
 static void afs_setattr_success(struct afs_operation *op)
 {
-	afs_vnode_commit_status(op, &op->file[0]);
+	struct afs_vnode_param *vp = &op->file[0];
+	struct inode *inode = &vp->vnode->vfs_inode;
+	loff_t old_i_size = i_size_read(inode);
+
+	op->setattr.old_i_size = old_i_size;
+	afs_vnode_commit_status(op, vp);
+	/* inode->i_size has now been changed. */
+
+	if (op->setattr.attr->ia_valid & ATTR_SIZE) {
+		loff_t size = op->setattr.attr->ia_size;
+		if (size > old_i_size)
+			pagecache_isize_extended(inode, old_i_size, size);
+	}
+}
+
+static void afs_setattr_edit_file(struct afs_operation *op)
+{
+	struct afs_vnode_param *vp = &op->file[0];
+	struct inode *inode = &vp->vnode->vfs_inode;
+
+	if (op->setattr.attr->ia_valid & ATTR_SIZE) {
+		loff_t size = op->setattr.attr->ia_size;
+		loff_t i_size = op->setattr.old_i_size;
+
+		if (size < i_size)
+			truncate_pagecache(inode, size);
+	}
 }
 
 static const struct afs_operation_ops afs_setattr_operation = {
 	.issue_afs_rpc	= afs_fs_setattr,
 	.issue_yfs_rpc	= yfs_fs_setattr,
 	.success	= afs_setattr_success,
+	.edit_dir	= afs_setattr_edit_file,
 };
 
 /*
  * set the attributes of an inode
  */
-int afs_setattr(struct dentry *dentry, struct iattr *attr)
+int afs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+		struct iattr *attr)
 {
 	struct afs_operation *op;
 	struct afs_vnode *vnode = AFS_FS_I(d_inode(dentry));
+	int ret;
 
 	_enter("{%llx:%llu},{n=%pd},%x",
 	       vnode->fid.vid, vnode->fid.vnode, dentry,
 	       attr->ia_valid);
 
 	if (!(attr->ia_valid & (ATTR_SIZE | ATTR_MODE | ATTR_UID | ATTR_GID |
-				ATTR_MTIME))) {
+				ATTR_MTIME | ATTR_MTIME_SET | ATTR_TIMES_SET |
+				ATTR_TOUCH))) {
 		_leave(" = 0 [unsupported]");
 		return 0;
+	}
+
+	if (attr->ia_valid & ATTR_SIZE) {
+		if (!S_ISREG(vnode->vfs_inode.i_mode))
+			return -EISDIR;
+
+		ret = inode_newsize_ok(&vnode->vfs_inode, attr->ia_size);
+		if (ret)
+			return ret;
+
+		if (attr->ia_size == i_size_read(&vnode->vfs_inode))
+			attr->ia_valid &= ~ATTR_SIZE;
 	}
 
 	/* flush any dirty data outstanding on a regular file */
 	if (S_ISREG(vnode->vfs_inode.i_mode))
 		filemap_write_and_wait(vnode->vfs_inode.i_mapping);
 
+	/* Prevent any new writebacks from starting whilst we do this. */
+	down_write(&vnode->validate_lock);
+
 	op = afs_alloc_operation(((attr->ia_valid & ATTR_FILE) ?
 				  afs_file_key(attr->ia_file) : NULL),
 				 vnode->volume);
-	if (IS_ERR(op))
-		return PTR_ERR(op);
+	if (IS_ERR(op)) {
+		ret = PTR_ERR(op);
+		goto out_unlock;
+	}
 
 	afs_op_set_vnode(op, 0, vnode);
 	op->setattr.attr = attr;
 
-	if (attr->ia_valid & ATTR_SIZE)
+	if (attr->ia_valid & ATTR_SIZE) {
 		op->file[0].dv_delta = 1;
+		op->file[0].set_size = true;
+	}
+	op->ctime = attr->ia_ctime;
+	op->file[0].update_ctime = 1;
+	op->file[0].modification = true;
 
 	op->ops = &afs_setattr_operation;
-	return afs_do_sync_operation(op);
+	ret = afs_do_sync_operation(op);
+
+out_unlock:
+	up_write(&vnode->validate_lock);
+	_leave(" = %d", ret);
+	return ret;
 }

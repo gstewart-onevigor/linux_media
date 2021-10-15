@@ -11,6 +11,32 @@
 #include <signal.h>
 #include <string.h>
 #include <execinfo.h> /* backtrace */
+#include <linux/membarrier.h>
+
+/* Adapted from perf/util/string.c */
+static bool glob_match(const char *str, const char *pat)
+{
+	while (*str && *pat && *pat != '*') {
+		if (*str != *pat)
+			return false;
+		str++;
+		pat++;
+	}
+	/* Check wild card */
+	if (*pat == '*') {
+		while (*pat == '*')
+			pat++;
+		if (!*pat) /* Tail wild card matches all */
+			return true;
+		while (*str)
+			if (glob_match(str++, pat))
+				return true;
+	}
+	return !*str && !*pat;
+}
+
+#define EXIT_NO_TEST		2
+#define EXIT_ERR_SETUP_INFRA	3
 
 /* defined in test_progs.h */
 struct test_env env = {};
@@ -51,12 +77,12 @@ static bool should_run(struct test_selector *sel, int num, const char *name)
 	int i;
 
 	for (i = 0; i < sel->blacklist.cnt; i++) {
-		if (strstr(name, sel->blacklist.strs[i]))
+		if (glob_match(name, sel->blacklist.strs[i]))
 			return false;
 	}
 
 	for (i = 0; i < sel->whitelist.cnt; i++) {
-		if (strstr(name, sel->whitelist.strs[i]))
+		if (glob_match(name, sel->whitelist.strs[i]))
 			return true;
 	}
 
@@ -111,13 +137,31 @@ static void reset_affinity() {
 	if (err < 0) {
 		stdio_restore();
 		fprintf(stderr, "Failed to reset process affinity: %d!\n", err);
-		exit(-1);
+		exit(EXIT_ERR_SETUP_INFRA);
 	}
 	err = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
 	if (err < 0) {
 		stdio_restore();
 		fprintf(stderr, "Failed to reset thread affinity: %d!\n", err);
-		exit(-1);
+		exit(EXIT_ERR_SETUP_INFRA);
+	}
+}
+
+static void save_netns(void)
+{
+	env.saved_netns_fd = open("/proc/self/ns/net", O_RDONLY);
+	if (env.saved_netns_fd == -1) {
+		perror("open(/proc/self/ns/net)");
+		exit(EXIT_ERR_SETUP_INFRA);
+	}
+}
+
+static void restore_netns(void)
+{
+	if (setns(env.saved_netns_fd, CLONE_NEWNET) == -1) {
+		stdio_restore();
+		perror("setns(CLONE_NEWNS)");
+		exit(EXIT_ERR_SETUP_INFRA);
 	}
 }
 
@@ -126,19 +170,17 @@ void test__end_subtest()
 	struct prog_test_def *test = env.test;
 	int sub_error_cnt = test->error_cnt - test->old_error_cnt;
 
-	if (sub_error_cnt)
-		env.fail_cnt++;
-	else
-		env.sub_succ_cnt++;
-	skip_account();
-
 	dump_test_log(test, sub_error_cnt);
 
-	fprintf(env.stdout, "#%d/%d %s:%s\n",
-	       test->test_num, test->subtest_num,
-	       test->subtest_name, sub_error_cnt ? "FAIL" : "OK");
+	fprintf(env.stdout, "#%d/%d %s/%s:%s\n",
+	       test->test_num, test->subtest_num, test->test_name, test->subtest_name,
+	       sub_error_cnt ? "FAIL" : (test->skip_cnt ? "SKIP" : "OK"));
 
-	reset_affinity();
+	if (sub_error_cnt)
+		env.fail_cnt++;
+	else if (test->skip_cnt == 0)
+		env.sub_succ_cnt++;
+	skip_account();
 
 	free(test->subtest_name);
 	test->subtest_name = NULL;
@@ -341,6 +383,68 @@ err:
 	return -1;
 }
 
+static int finit_module(int fd, const char *param_values, int flags)
+{
+	return syscall(__NR_finit_module, fd, param_values, flags);
+}
+
+static int delete_module(const char *name, int flags)
+{
+	return syscall(__NR_delete_module, name, flags);
+}
+
+/*
+ * Trigger synchronize_rcu() in kernel.
+ */
+int kern_sync_rcu(void)
+{
+	return syscall(__NR_membarrier, MEMBARRIER_CMD_SHARED, 0, 0);
+}
+
+static void unload_bpf_testmod(void)
+{
+	if (kern_sync_rcu())
+		fprintf(env.stderr, "Failed to trigger kernel-side RCU sync!\n");
+	if (delete_module("bpf_testmod", 0)) {
+		if (errno == ENOENT) {
+			if (env.verbosity > VERBOSE_NONE)
+				fprintf(stdout, "bpf_testmod.ko is already unloaded.\n");
+			return;
+		}
+		fprintf(env.stderr, "Failed to unload bpf_testmod.ko from kernel: %d\n", -errno);
+		return;
+	}
+	if (env.verbosity > VERBOSE_NONE)
+		fprintf(stdout, "Successfully unloaded bpf_testmod.ko.\n");
+}
+
+static int load_bpf_testmod(void)
+{
+	int fd;
+
+	/* ensure previous instance of the module is unloaded */
+	unload_bpf_testmod();
+
+	if (env.verbosity > VERBOSE_NONE)
+		fprintf(stdout, "Loading bpf_testmod.ko...\n");
+
+	fd = open("bpf_testmod.ko", O_RDONLY);
+	if (fd < 0) {
+		fprintf(env.stderr, "Can't find bpf_testmod.ko kernel module: %d\n", -errno);
+		return -ENOENT;
+	}
+	if (finit_module(fd, "", 0)) {
+		fprintf(env.stderr, "Failed to load bpf_testmod.ko into the kernel: %d\n", -errno);
+		close(fd);
+		return -EINVAL;
+	}
+	close(fd);
+
+	if (env.verbosity > VERBOSE_NONE)
+		fprintf(stdout, "Successfully loaded bpf_testmod.ko.\n");
+	return 0;
+}
+
 /* extern declarations for test funcs */
 #define DEFINE_TEST(name) extern void test_##name(void);
 #include <prog_tests/tests.h>
@@ -366,6 +470,10 @@ enum ARG_KEYS {
 	ARG_TEST_NAME_BLACKLIST = 'b',
 	ARG_VERIFIER_STATS = 's',
 	ARG_VERBOSE = 'v',
+	ARG_GET_TEST_CNT = 'c',
+	ARG_LIST_TEST_NAMES = 'l',
+	ARG_TEST_NAME_GLOB_ALLOWLIST = 'a',
+	ARG_TEST_NAME_GLOB_DENYLIST = 'd',
 };
 
 static const struct argp_option opts[] = {
@@ -379,6 +487,14 @@ static const struct argp_option opts[] = {
 	  "Output verifier statistics", },
 	{ "verbose", ARG_VERBOSE, "LEVEL", OPTION_ARG_OPTIONAL,
 	  "Verbose output (use -vv or -vvv for progressively verbose output)" },
+	{ "count", ARG_GET_TEST_CNT, NULL, 0,
+	  "Get number of selected top-level tests " },
+	{ "list", ARG_LIST_TEST_NAMES, NULL, 0,
+	  "List test names that would run (without running them) " },
+	{ "allow", ARG_TEST_NAME_GLOB_ALLOWLIST, "NAMES", 0,
+	  "Run tests with name matching the pattern (supports '*' wildcard)." },
+	{ "deny", ARG_TEST_NAME_GLOB_DENYLIST, "NAMES", 0,
+	  "Don't run tests with name matching the pattern (supports '*' wildcard)." },
 	{},
 };
 
@@ -403,17 +519,14 @@ static void free_str_set(const struct str_set *set)
 	free(set->strs);
 }
 
-static int parse_str_list(const char *s, struct str_set *set)
+static int parse_str_list(const char *s, struct str_set *set, bool is_glob_pattern)
 {
 	char *input, *state = NULL, *next, **tmp, **strs = NULL;
-	int cnt = 0;
+	int i, cnt = 0;
 
 	input = strdup(s);
 	if (!input)
 		return -ENOMEM;
-
-	set->cnt = 0;
-	set->strs = NULL;
 
 	while ((next = strtok_r(state ? NULL : input, ",", &state))) {
 		tmp = realloc(strs, sizeof(*strs) * (cnt + 1));
@@ -421,18 +534,33 @@ static int parse_str_list(const char *s, struct str_set *set)
 			goto err;
 		strs = tmp;
 
-		strs[cnt] = strdup(next);
-		if (!strs[cnt])
-			goto err;
+		if (is_glob_pattern) {
+			strs[cnt] = strdup(next);
+			if (!strs[cnt])
+				goto err;
+		} else {
+			strs[cnt] = malloc(strlen(next) + 2 + 1);
+			if (!strs[cnt])
+				goto err;
+			sprintf(strs[cnt], "*%s*", next);
+		}
 
 		cnt++;
 	}
 
-	set->cnt = cnt;
-	set->strs = (const char **)strs;
+	tmp = realloc(set->strs, sizeof(*strs) * (cnt + set->cnt));
+	if (!tmp)
+		goto err;
+	memcpy(tmp + set->cnt, strs, sizeof(*strs) * cnt);
+	set->strs = (const char **)tmp;
+	set->cnt += cnt;
+
 	free(input);
+	free(strs);
 	return 0;
 err:
+	for (i = 0; i < cnt; i++)
+		free(strs[i]);
 	free(strs);
 	free(input);
 	return -ENOMEM;
@@ -465,29 +593,35 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		}
 		break;
 	}
+	case ARG_TEST_NAME_GLOB_ALLOWLIST:
 	case ARG_TEST_NAME: {
 		char *subtest_str = strchr(arg, '/');
 
 		if (subtest_str) {
 			*subtest_str = '\0';
 			if (parse_str_list(subtest_str + 1,
-					   &env->subtest_selector.whitelist))
+					   &env->subtest_selector.whitelist,
+					   key == ARG_TEST_NAME_GLOB_ALLOWLIST))
 				return -ENOMEM;
 		}
-		if (parse_str_list(arg, &env->test_selector.whitelist))
+		if (parse_str_list(arg, &env->test_selector.whitelist,
+				   key == ARG_TEST_NAME_GLOB_ALLOWLIST))
 			return -ENOMEM;
 		break;
 	}
+	case ARG_TEST_NAME_GLOB_DENYLIST:
 	case ARG_TEST_NAME_BLACKLIST: {
 		char *subtest_str = strchr(arg, '/');
 
 		if (subtest_str) {
 			*subtest_str = '\0';
 			if (parse_str_list(subtest_str + 1,
-					   &env->subtest_selector.blacklist))
+					   &env->subtest_selector.blacklist,
+					   key == ARG_TEST_NAME_GLOB_DENYLIST))
 				return -ENOMEM;
 		}
-		if (parse_str_list(arg, &env->test_selector.blacklist))
+		if (parse_str_list(arg, &env->test_selector.blacklist,
+				   key == ARG_TEST_NAME_GLOB_DENYLIST))
 			return -ENOMEM;
 		break;
 	}
@@ -510,6 +644,22 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 				return -EINVAL;
 			}
 		}
+
+		if (env->verbosity > VERBOSE_NONE) {
+			if (setenv("SELFTESTS_VERBOSE", "1", 1) == -1) {
+				fprintf(stderr,
+					"Unable to setenv SELFTESTS_VERBOSE=1 (errno=%d)",
+					errno);
+				return -1;
+			}
+		}
+
+		break;
+	case ARG_GET_TEST_CNT:
+		env->get_test_cnt = true;
+		break;
+	case ARG_LIST_TEST_NAMES:
+		env->list_test_names = true;
 		break;
 	case ARGP_KEY_ARG:
 		argp_usage(state);
@@ -587,7 +737,9 @@ int cd_flavor_subdir(const char *exec_name)
 	if (!flavor)
 		return 0;
 	flavor++;
-	fprintf(stdout, "Switching to flavor '%s' subdirectory...\n", flavor);
+	if (env.verbosity > VERBOSE_NONE)
+		fprintf(stdout,	"Switching to flavor '%s' subdirectory...\n", flavor);
+
 	return chdir(flavor);
 }
 
@@ -631,6 +783,9 @@ int main(int argc, char **argv)
 	if (err)
 		return err;
 
+	/* Use libbpf 1.0 API mode */
+	libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
+
 	libbpf_set_print(libbpf_print_fn);
 
 	srand(time(NULL));
@@ -643,7 +798,13 @@ int main(int argc, char **argv)
 		return -1;
 	}
 
+	save_netns();
 	stdio_hijack();
+	env.has_testmod = true;
+	if (!env.list_test_names && load_bpf_testmod()) {
+		fprintf(env.stderr, "WARNING! Selftests relying on bpf_testmod.ko will be skipped.\n");
+		env.has_testmod = false;
+	}
 	for (i = 0; i < prog_test_cnt; i++) {
 		struct prog_test_def *test = &prog_test_defs[i];
 
@@ -654,38 +815,67 @@ int main(int argc, char **argv)
 				test->test_num, test->test_name))
 			continue;
 
+		if (env.get_test_cnt) {
+			env.succ_cnt++;
+			continue;
+		}
+
+		if (env.list_test_names) {
+			fprintf(env.stdout, "%s\n", test->test_name);
+			env.succ_cnt++;
+			continue;
+		}
+
 		test->run_test();
 		/* ensure last sub-test is finalized properly */
 		if (test->subtest_name)
 			test__end_subtest();
 
 		test->tested = true;
+
+		dump_test_log(test, test->error_cnt);
+
+		fprintf(env.stdout, "#%d %s:%s\n",
+			test->test_num, test->test_name,
+			test->error_cnt ? "FAIL" : (test->skip_cnt ? "SKIP" : "OK"));
+
 		if (test->error_cnt)
 			env.fail_cnt++;
 		else
 			env.succ_cnt++;
 		skip_account();
 
-		dump_test_log(test, test->error_cnt);
-
-		fprintf(env.stdout, "#%d %s:%s\n",
-			test->test_num, test->test_name,
-			test->error_cnt ? "FAIL" : "OK");
-
 		reset_affinity();
+		restore_netns();
 		if (test->need_cgroup_cleanup)
 			cleanup_cgroup_environment();
 	}
+	if (!env.list_test_names && env.has_testmod)
+		unload_bpf_testmod();
 	stdio_restore();
+
+	if (env.get_test_cnt) {
+		printf("%d\n", env.succ_cnt);
+		goto out;
+	}
+
+	if (env.list_test_names)
+		goto out;
+
 	fprintf(stdout, "Summary: %d/%d PASSED, %d SKIPPED, %d FAILED\n",
 		env.succ_cnt, env.sub_succ_cnt, env.skip_cnt, env.fail_cnt);
 
+out:
 	free_str_set(&env.test_selector.blacklist);
 	free_str_set(&env.test_selector.whitelist);
 	free(env.test_selector.num_set);
 	free_str_set(&env.subtest_selector.blacklist);
 	free_str_set(&env.subtest_selector.whitelist);
 	free(env.subtest_selector.num_set);
+	close(env.saved_netns_fd);
+
+	if (env.succ_cnt + env.fail_cnt + env.skip_cnt == 0)
+		return EXIT_NO_TEST;
 
 	return env.fail_cnt ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -110,7 +110,7 @@ static bool sensor_fw_synd_rfr(struct mlx5_core_dev *dev)
 	return rfr && synd;
 }
 
-static u32 check_fatal_sensors(struct mlx5_core_dev *dev)
+u32 mlx5_health_check_fatal_sensors(struct mlx5_core_dev *dev)
 {
 	if (sensor_pci_not_working(dev))
 		return MLX5_SENSOR_PCI_COMM_ERR;
@@ -170,10 +170,10 @@ static bool reset_fw_if_needed(struct mlx5_core_dev *dev)
 
 	/* The reset only needs to be issued by one PF. The health buffer is
 	 * shared between all functions, and will be cleared during a reset.
-	 * Check again to avoid a redundant 2nd reset. If the fatal erros was
+	 * Check again to avoid a redundant 2nd reset. If the fatal errors was
 	 * PCI related a reset won't help.
 	 */
-	fatal_error = check_fatal_sensors(dev);
+	fatal_error = mlx5_health_check_fatal_sensors(dev);
 	if (fatal_error == MLX5_SENSOR_PCI_COMM_ERR ||
 	    fatal_error == MLX5_SENSOR_NIC_DISABLED ||
 	    fatal_error == MLX5_SENSOR_NIC_SW_RESET) {
@@ -190,12 +190,22 @@ static bool reset_fw_if_needed(struct mlx5_core_dev *dev)
 	return true;
 }
 
+static void enter_error_state(struct mlx5_core_dev *dev, bool force)
+{
+	if (mlx5_health_check_fatal_sensors(dev) || force) { /* protected state setting */
+		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
+		mlx5_cmd_flush(dev);
+	}
+
+	mlx5_notifier_call_chain(dev->priv.events, MLX5_DEV_EVENT_SYS_ERROR, (void *)1);
+}
+
 void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 {
 	bool err_detected = false;
 
 	/* Mark the device as fatal in order to abort FW commands */
-	if ((check_fatal_sensors(dev) || force) &&
+	if ((mlx5_health_check_fatal_sensors(dev) || force) &&
 	    dev->state == MLX5_DEVICE_STATE_UP) {
 		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
 		err_detected = true;
@@ -203,17 +213,8 @@ void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 	mutex_lock(&dev->intf_state_mutex);
 	if (!err_detected && dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR)
 		goto unlock;/* a previous error is still being handled */
-	if (dev->state == MLX5_DEVICE_STATE_UNINITIALIZED) {
-		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
-		goto unlock;
-	}
 
-	if (check_fatal_sensors(dev) || force) { /* protected state setting */
-		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
-		mlx5_cmd_flush(dev);
-	}
-
-	mlx5_notifier_call_chain(dev->priv.events, MLX5_DEV_EVENT_SYS_ERROR, (void *)1);
+	enter_error_state(dev, force);
 unlock:
 	mutex_unlock(&dev->intf_state_mutex);
 }
@@ -231,7 +232,7 @@ void mlx5_error_sw_reset(struct mlx5_core_dev *dev)
 
 	mlx5_core_err(dev, "start\n");
 
-	if (check_fatal_sensors(dev) == MLX5_SENSOR_FW_SYND_RFR) {
+	if (mlx5_health_check_fatal_sensors(dev) == MLX5_SENSOR_FW_SYND_RFR) {
 		/* Get cr-dump and reset FW semaphore */
 		lock = lock_sem_sw_reset(dev, true);
 
@@ -308,29 +309,34 @@ static void mlx5_handle_bad_state(struct mlx5_core_dev *dev)
 
 /* How much time to wait until health resetting the driver (in msecs) */
 #define MLX5_RECOVERY_WAIT_MSECS 60000
-static int mlx5_health_try_recover(struct mlx5_core_dev *dev)
+int mlx5_health_wait_pci_up(struct mlx5_core_dev *dev)
 {
 	unsigned long end;
 
-	mlx5_core_warn(dev, "handling bad device here\n");
-	mlx5_handle_bad_state(dev);
 	end = jiffies + msecs_to_jiffies(MLX5_RECOVERY_WAIT_MSECS);
 	while (sensor_pci_not_working(dev)) {
-		if (time_after(jiffies, end)) {
-			mlx5_core_err(dev,
-				      "health recovery flow aborted, PCI reads still not working\n");
-			return -EIO;
-		}
+		if (time_after(jiffies, end))
+			return -ETIMEDOUT;
 		msleep(100);
 	}
+	return 0;
+}
 
+static int mlx5_health_try_recover(struct mlx5_core_dev *dev)
+{
+	mlx5_core_warn(dev, "handling bad device here\n");
+	mlx5_handle_bad_state(dev);
+	if (mlx5_health_wait_pci_up(dev)) {
+		mlx5_core_err(dev, "health recovery flow aborted, PCI reads still not working\n");
+		return -EIO;
+	}
 	mlx5_core_err(dev, "starting health recovery flow\n");
-	mlx5_recover_device(dev);
-	if (!test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state) ||
-	    check_fatal_sensors(dev)) {
+	if (mlx5_recover_device(dev) || mlx5_health_check_fatal_sensors(dev)) {
 		mlx5_core_err(dev, "health recovery failed\n");
 		return -EIO;
 	}
+
+	mlx5_core_info(dev, "health recovery succeeded\n");
 	return 0;
 }
 
@@ -608,7 +614,7 @@ static void mlx5_fw_fatal_reporter_err_work(struct work_struct *work)
 	priv = container_of(health, struct mlx5_priv, health);
 	dev = container_of(priv, struct mlx5_core_dev, priv);
 
-	mlx5_enter_error_state(dev, false);
+	enter_error_state(dev, false);
 	if (IS_ERR_OR_NULL(health->fw_fatal_reporter)) {
 		if (mlx5_health_try_recover(dev))
 			mlx5_core_err(dev, "health recovery failed\n");
@@ -616,8 +622,16 @@ static void mlx5_fw_fatal_reporter_err_work(struct work_struct *work)
 	}
 	fw_reporter_ctx.err_synd = health->synd;
 	fw_reporter_ctx.miss_counter = health->miss_counter;
-	devlink_health_report(health->fw_fatal_reporter,
-			      "FW fatal error reported", &fw_reporter_ctx);
+	if (devlink_health_report(health->fw_fatal_reporter,
+				  "FW fatal error reported", &fw_reporter_ctx) == -ECANCELED) {
+		/* If recovery wasn't performed, due to grace period,
+		 * unload the driver. This ensures that the driver
+		 * closes all its resources and it is not subjected to
+		 * requests from the kernel.
+		 */
+		mlx5_core_err(dev, "Driver is in error state. Unloading\n");
+		mlx5_unload_one(dev);
+	}
 }
 
 static const struct devlink_health_reporter_ops mlx5_fw_fatal_reporter_ops = {
@@ -696,14 +710,15 @@ static void poll_health(struct timer_list *t)
 	if (dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR)
 		goto out;
 
-	fatal_error = check_fatal_sensors(dev);
+	fatal_error = mlx5_health_check_fatal_sensors(dev);
 
 	if (fatal_error && !health->fatal_error) {
 		mlx5_core_err(dev, "Fatal error %u detected\n", fatal_error);
 		dev->priv.health.fatal_error = fatal_error;
 		print_health_info(dev);
+		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
 		mlx5_trigger_health_work(dev);
-		goto out;
+		return;
 	}
 
 	count = ioread32be(health->health_counter);

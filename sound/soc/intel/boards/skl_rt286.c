@@ -228,7 +228,7 @@ static int skylake_ssp0_fixup(struct snd_soc_pcm_runtime *rtd,
 static int skylake_rt286_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int ret;
 
@@ -548,6 +548,7 @@ static const struct platform_device_id skl_board_ids[] = {
 	{ .name = "kbl_alc286s_i2s" },
 	{ }
 };
+MODULE_DEVICE_TABLE(platform, skl_board_ids);
 
 static struct platform_driver skylake_audio = {
 	.probe = skylake_audio_probe,
@@ -565,5 +566,3 @@ module_platform_driver(skylake_audio)
 MODULE_AUTHOR("Omair Mohammed Abdullah <omair.m.abdullah@intel.com>");
 MODULE_DESCRIPTION("Intel SST Audio for Skylake");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("platform:skl_alc286s_i2s");
-MODULE_ALIAS("platform:kbl_alc286s_i2s");

@@ -45,6 +45,9 @@
 #include <linux/dma-mapping.h>
 #include <linux/if_vlan.h>
 #include <linux/vmalloc.h>
+#include <rdma/ib_verbs.h>
+#include <rdma/ib_umem.h>
+
 #include "roce_hsi.h"
 #include "qplib_res.h"
 #include "qplib_sp.h"
@@ -53,6 +56,7 @@
 static void bnxt_qplib_free_stats_ctx(struct pci_dev *pdev,
 				      struct bnxt_qplib_stats *stats);
 static int bnxt_qplib_alloc_stats_ctx(struct pci_dev *pdev,
+				      struct bnxt_qplib_chip_ctx *cctx,
 				      struct bnxt_qplib_stats *stats);
 
 /* PBL */
@@ -87,12 +91,11 @@ static void __free_pbl(struct bnxt_qplib_res *res, struct bnxt_qplib_pbl *pbl,
 static void bnxt_qplib_fill_user_dma_pages(struct bnxt_qplib_pbl *pbl,
 					   struct bnxt_qplib_sg_info *sginfo)
 {
-	struct scatterlist *sghead = sginfo->sghead;
-	struct sg_dma_page_iter sg_iter;
+	struct ib_block_iter biter;
 	int i = 0;
 
-	for_each_sg_dma_page(sghead, &sg_iter, sginfo->nmap, 0) {
-		pbl->pg_map_arr[i] = sg_page_iter_dma_address(&sg_iter);
+	rdma_umem_for_each_dma_block(sginfo->umem, &biter, sginfo->pgsize) {
+		pbl->pg_map_arr[i] = rdma_block_iter_dma_address(&biter);
 		pbl->pg_arr[i] = NULL;
 		pbl->pg_count++;
 		i++;
@@ -104,15 +107,16 @@ static int __alloc_pbl(struct bnxt_qplib_res *res,
 		       struct bnxt_qplib_sg_info *sginfo)
 {
 	struct pci_dev *pdev = res->pdev;
-	struct scatterlist *sghead;
 	bool is_umem = false;
 	u32 pages;
 	int i;
 
 	if (sginfo->nopte)
 		return 0;
-	pages = sginfo->npages;
-	sghead = sginfo->sghead;
+	if (sginfo->umem)
+		pages = ib_umem_num_dma_blocks(sginfo->umem, sginfo->pgsize);
+	else
+		pages = sginfo->npages;
 	/* page ptr arrays */
 	pbl->pg_arr = vmalloc(pages * sizeof(void *));
 	if (!pbl->pg_arr)
@@ -127,7 +131,7 @@ static int __alloc_pbl(struct bnxt_qplib_res *res,
 	pbl->pg_count = 0;
 	pbl->pg_size = sginfo->pgsize;
 
-	if (!sghead) {
+	if (!sginfo->umem) {
 		for (i = 0; i < pages; i++) {
 			pbl->pg_arr[i] = dma_alloc_coherent(&pdev->dev,
 							    pbl->pg_size,
@@ -183,14 +187,12 @@ int bnxt_qplib_alloc_init_hwq(struct bnxt_qplib_hwq *hwq,
 	struct bnxt_qplib_sg_info sginfo = {};
 	u32 depth, stride, npbl, npde;
 	dma_addr_t *src_phys_ptr, **dst_virt_ptr;
-	struct scatterlist *sghead = NULL;
 	struct bnxt_qplib_res *res;
 	struct pci_dev *pdev;
 	int i, rc, lvl;
 
 	res = hwq_attr->res;
 	pdev = res->pdev;
-	sghead = hwq_attr->sginfo->sghead;
 	pg_size = hwq_attr->sginfo->pgsize;
 	hwq->level = PBL_LVL_MAX;
 
@@ -204,7 +206,7 @@ int bnxt_qplib_alloc_init_hwq(struct bnxt_qplib_hwq *hwq,
 			aux_pages++;
 	}
 
-	if (!sghead) {
+	if (!hwq_attr->sginfo->umem) {
 		hwq->is_user = false;
 		npages = (depth * stride) / pg_size + aux_pages;
 		if ((depth * stride) % pg_size)
@@ -213,11 +215,14 @@ int bnxt_qplib_alloc_init_hwq(struct bnxt_qplib_hwq *hwq,
 			return -EINVAL;
 		hwq_attr->sginfo->npages = npages;
 	} else {
+		unsigned long sginfo_num_pages = ib_umem_num_dma_blocks(
+			hwq_attr->sginfo->umem, hwq_attr->sginfo->pgsize);
+
 		hwq->is_user = true;
-		npages = hwq_attr->sginfo->npages;
+		npages = sginfo_num_pages;
 		npages = (npages * PAGE_SIZE) /
 			  BIT_ULL(hwq_attr->sginfo->pgshft);
-		if ((hwq_attr->sginfo->npages * PAGE_SIZE) %
+		if ((sginfo_num_pages * PAGE_SIZE) %
 		     BIT_ULL(hwq_attr->sginfo->pgshft))
 			if (!npages)
 				npages++;
@@ -555,7 +560,7 @@ int bnxt_qplib_alloc_ctx(struct bnxt_qplib_res *res,
 		goto fail;
 stats_alloc:
 	/* Stats */
-	rc = bnxt_qplib_alloc_stats_ctx(res->pdev, &ctx->stats);
+	rc = bnxt_qplib_alloc_stats_ctx(res->pdev, res->cctx, &ctx->stats);
 	if (rc)
 		goto fail;
 
@@ -850,6 +855,7 @@ static int bnxt_qplib_alloc_dpi_tbl(struct bnxt_qplib_res     *res,
 
 unmap_io:
 	pci_iounmap(res->pdev, dpit->dbr_bar_reg_iomem);
+	dpit->dbr_bar_reg_iomem = NULL;
 	return -ENOMEM;
 }
 
@@ -884,15 +890,12 @@ static void bnxt_qplib_free_stats_ctx(struct pci_dev *pdev,
 }
 
 static int bnxt_qplib_alloc_stats_ctx(struct pci_dev *pdev,
+				      struct bnxt_qplib_chip_ctx *cctx,
 				      struct bnxt_qplib_stats *stats)
 {
 	memset(stats, 0, sizeof(*stats));
 	stats->fw_id = -1;
-	/* 128 byte aligned context memory is required only for 57500.
-	 * However making this unconditional, it does not harm previous
-	 * generation.
-	 */
-	stats->size = ALIGN(sizeof(struct ctx_hw_stats), 128);
+	stats->size = cctx->hw_stats_size;
 	stats->dma = dma_alloc_coherent(&pdev->dev, stats->size,
 					&stats->dma_map, GFP_KERNEL);
 	if (!stats->dma) {
@@ -953,4 +956,21 @@ int bnxt_qplib_alloc_res(struct bnxt_qplib_res *res, struct pci_dev *pdev,
 fail:
 	bnxt_qplib_free_res(res);
 	return rc;
+}
+
+int bnxt_qplib_determine_atomics(struct pci_dev *dev)
+{
+	int comp;
+	u16 ctl2;
+
+	comp = pci_enable_atomic_ops_to_root(dev,
+					     PCI_EXP_DEVCAP2_ATOMIC_COMP32);
+	if (comp)
+		return -EOPNOTSUPP;
+	comp = pci_enable_atomic_ops_to_root(dev,
+					     PCI_EXP_DEVCAP2_ATOMIC_COMP64);
+	if (comp)
+		return -EOPNOTSUPP;
+	pcie_capability_read_word(dev, PCI_EXP_DEVCTL2, &ctl2);
+	return !(ctl2 & PCI_EXP_DEVCTL2_ATOMIC_REQ);
 }

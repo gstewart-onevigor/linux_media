@@ -151,8 +151,10 @@ static int sun6i_video_start_streaming(struct vb2_queue *vq, unsigned int count)
 	}
 
 	subdev = sun6i_video_remote_subdev(video, NULL);
-	if (!subdev)
+	if (!subdev) {
+		ret = -EINVAL;
 		goto stop_media_pipeline;
+	}
 
 	config.pixelformat = video->fmt.fmt.pix.pixelformat;
 	config.code = video->mbus_code;
@@ -479,8 +481,10 @@ static int sun6i_video_open(struct file *file)
 		goto fh_release;
 
 	/* check if already powered */
-	if (!v4l2_fh_is_singular_file(file))
+	if (!v4l2_fh_is_singular_file(file)) {
+		ret = -EBUSY;
 		goto unlock;
+	}
 
 	ret = sun6i_csi_set_power(video->csi, true);
 	if (ret < 0)
@@ -660,13 +664,11 @@ int sun6i_video_init(struct sun6i_video *video, struct sun6i_csi *csi,
 	if (ret < 0) {
 		v4l2_err(&csi->v4l2_dev,
 			 "video_register_device failed: %d\n", ret);
-		goto release_vb2;
+		goto clean_entity;
 	}
 
 	return 0;
 
-release_vb2:
-	vb2_queue_release(&video->vb2_vidq);
 clean_entity:
 	media_entity_cleanup(&video->vdev.entity);
 	mutex_destroy(&video->lock);
@@ -675,8 +677,7 @@ clean_entity:
 
 void sun6i_video_cleanup(struct sun6i_video *video)
 {
-	video_unregister_device(&video->vdev);
+	vb2_video_unregister_device(&video->vdev);
 	media_entity_cleanup(&video->vdev.entity);
-	vb2_queue_release(&video->vb2_vidq);
 	mutex_destroy(&video->lock);
 }

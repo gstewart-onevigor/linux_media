@@ -811,12 +811,11 @@ int bma400_probe(struct device *dev, struct regmap *regmap, const char *name)
 	if (ret)
 		return ret;
 
-	ret = iio_read_mount_matrix(dev, "mount-matrix", &data->orientation);
+	ret = iio_read_mount_matrix(dev, &data->orientation);
 	if (ret)
 		return ret;
 
 	mutex_init(&data->mutex);
-	indio_dev->dev.parent = dev;
 	indio_dev->name = name;
 	indio_dev->info = &bma400_info;
 	indio_dev->channels = bma400_channels;

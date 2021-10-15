@@ -2430,7 +2430,7 @@ fe_lla_error_t	fe_stid135_search(fe_stid135_handle_t handle, enum fe_stid135_dem
 			error |= fe_stid135_manage_manual_rolloff(handle, demod);
 		}
 	#endif
-#if 0
+#if 1
 	if((pSearch->symbol_rate >= pParams->master_clock) && (pParams->demod_search_algo[demod-1] == FE_SAT_BLIND_SEARCH)) /* if SR >= MST_CLK  & Blind search algo : usecase forbidden */
 		return(FE_LLA_NOT_SUPPORTED);
 
@@ -3449,7 +3449,7 @@ fe_lla_error_t fe_stid135_init (struct fe_sat_init_params *pInit,
 	/* Internal params structure allocation */
 	#ifdef HOST_PC
 		STCHIP_Info_t DemodChip;
-		pParams = kzalloc(sizeof(struct fe_stid135_internal_param), GFP_KERNEL);
+		pParams = kvzalloc(sizeof(struct fe_stid135_internal_param), GFP_KERNEL);
 		(*handle) = (fe_stid135_handle_t) pParams;
 	#endif
 
@@ -4791,7 +4791,7 @@ fe_lla_error_t FE_STiD135_Term(fe_stid135_handle_t Handle)
 			ChipClose(pParams->handle_soc);
 
 			if(Handle)
-				kfree(pParams);
+				kvfree(pParams);
 		#endif
 		
 	} else

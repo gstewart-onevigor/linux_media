@@ -52,8 +52,9 @@ union hfi1_ipoib_flow {
  * @producer_lock: producer sync lock
  * @consumer_lock: consumer sync lock
  */
+struct ipoib_txreq;
 struct hfi1_ipoib_circ_buf {
-	void **items;
+	struct ipoib_txreq **items;
 	unsigned long head;
 	unsigned long tail;
 	unsigned long max_items;
@@ -67,6 +68,9 @@ struct hfi1_ipoib_circ_buf {
  * @sde: sdma engine
  * @tx_list: tx request list
  * @sent_txreqs: count of txreqs posted to sdma
+ * @stops: count of stops of queue
+ * @ring_full: ring has been filled
+ * @no_desc: descriptor shortage seen
  * @flow: tracks when list needs to be flushed for a flow change
  * @q_idx: ipoib Tx queue index
  * @pkts_sent: indicator packets have been sent from this queue
@@ -80,6 +84,9 @@ struct hfi1_ipoib_txq {
 	struct sdma_engine *sde;
 	struct list_head tx_list;
 	u64 sent_txreqs;
+	atomic_t stops;
+	atomic_t ring_full;
+	atomic_t no_desc;
 	union hfi1_ipoib_flow flow;
 	u8 q_idx;
 	bool pkts_sent;
@@ -104,7 +111,6 @@ struct hfi1_ipoib_dev_priv {
 
 	const struct net_device_ops *netdev_ops;
 	struct rvt_qp *qp;
-	struct pcpu_sw_netstats __percpu *netstats;
 };
 
 /* hfi1 ipoib rdma netdev's private data structure */
@@ -120,36 +126,10 @@ hfi1_ipoib_priv(const struct net_device *dev)
 	return &((struct hfi1_ipoib_rdma_netdev *)netdev_priv(dev))->dev_priv;
 }
 
-static inline void
-hfi1_ipoib_update_rx_netstats(struct hfi1_ipoib_dev_priv *priv,
-			      u64 packets,
-			      u64 bytes)
-{
-	struct pcpu_sw_netstats *netstats = this_cpu_ptr(priv->netstats);
-
-	u64_stats_update_begin(&netstats->syncp);
-	netstats->rx_packets += packets;
-	netstats->rx_bytes += bytes;
-	u64_stats_update_end(&netstats->syncp);
-}
-
-static inline void
-hfi1_ipoib_update_tx_netstats(struct hfi1_ipoib_dev_priv *priv,
-			      u64 packets,
-			      u64 bytes)
-{
-	struct pcpu_sw_netstats *netstats = this_cpu_ptr(priv->netstats);
-
-	u64_stats_update_begin(&netstats->syncp);
-	netstats->tx_packets += packets;
-	netstats->tx_bytes += bytes;
-	u64_stats_update_end(&netstats->syncp);
-}
-
-int hfi1_ipoib_send_dma(struct net_device *dev,
-			struct sk_buff *skb,
-			struct ib_ah *address,
-			u32 dqpn);
+int hfi1_ipoib_send(struct net_device *dev,
+		    struct sk_buff *skb,
+		    struct ib_ah *address,
+		    u32 dqpn);
 
 int hfi1_ipoib_txreq_init(struct hfi1_ipoib_dev_priv *priv);
 void hfi1_ipoib_txreq_deinit(struct hfi1_ipoib_dev_priv *priv);
@@ -164,8 +144,10 @@ struct sk_buff *hfi1_ipoib_prepare_skb(struct hfi1_netdev_rxq *rxq,
 				       int size, void *data);
 
 int hfi1_ipoib_rn_get_params(struct ib_device *device,
-			     u8 port_num,
+			     u32 port_num,
 			     enum rdma_netdev_t type,
 			     struct rdma_netdev_alloc_params *params);
+
+void hfi1_ipoib_tx_timeout(struct net_device *dev, unsigned int q);
 
 #endif /* _IPOIB_H */

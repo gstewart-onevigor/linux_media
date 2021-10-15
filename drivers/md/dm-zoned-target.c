@@ -140,7 +140,7 @@ static int dmz_submit_bio(struct dmz_target *dmz, struct dm_zone *zone,
 	bio_advance(bio, clone->bi_iter.bi_size);
 
 	refcount_inc(&bioctx->ref);
-	generic_make_request(clone);
+	submit_bio_noacct(clone);
 
 	if (bio_op(bio) == REQ_OP_WRITE && dmz_is_seq(zone))
 		zone->wp_block += nr_blocks;
@@ -400,15 +400,7 @@ static void dmz_handle_bio(struct dmz_target *dmz, struct dm_chunk_work *cw,
 		dm_per_bio_data(bio, sizeof(struct dmz_bioctx));
 	struct dmz_metadata *zmd = dmz->metadata;
 	struct dm_zone *zone;
-	int i, ret;
-
-	/*
-	 * Write may trigger a zone allocation. So make sure the
-	 * allocation can succeed.
-	 */
-	if (bio_op(bio) == REQ_OP_WRITE)
-		for (i = 0; i < dmz->nr_ddevs; i++)
-			dmz_schedule_reclaim(dmz->dev[i].reclaim);
+	int ret;
 
 	dmz_lock_metadata(zmd);
 
@@ -890,7 +882,7 @@ static int dmz_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	/* Set target (no write same support) */
-	ti->max_io_len = dmz_zone_nr_sectors(dmz->metadata) << 9;
+	ti->max_io_len = dmz_zone_nr_sectors(dmz->metadata);
 	ti->num_flush_bios = 1;
 	ti->num_discard_bios = 1;
 	ti->num_write_zeroes_bios = 1;
@@ -1127,6 +1119,9 @@ static void dmz_status(struct dm_target *ti, status_type_t type,
 			DMEMIT(" %s", buf);
 		}
 		break;
+	case STATUSTYPE_IMA:
+		*result = '\0';
+		break;
 	}
 	return;
 }
@@ -1151,7 +1146,7 @@ static int dmz_message(struct dm_target *ti, unsigned int argc, char **argv,
 static struct target_type dmz_type = {
 	.name		 = "zoned",
 	.version	 = {2, 0, 0},
-	.features	 = DM_TARGET_SINGLETON | DM_TARGET_ZONED_HM,
+	.features	 = DM_TARGET_SINGLETON | DM_TARGET_MIXED_ZONED_MODEL,
 	.module		 = THIS_MODULE,
 	.ctr		 = dmz_ctr,
 	.dtr		 = dmz_dtr,

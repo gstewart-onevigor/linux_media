@@ -24,6 +24,7 @@ properties:
       - st,stm32f746-pinctrl
       - st,stm32f769-pinctrl
       - st,stm32h743-pinctrl
+      - st,stm32mp135-pinctrl
       - st,stm32mp157-pinctrl
       - st,stm32mp157-z-pinctrl
 
@@ -48,8 +49,8 @@ properties:
 
   st,package:
     description:
-     Indicates the SOC package used.
-     More details in include/dt-bindings/pinctrl/stm32-pinfunc.h
+      Indicates the SOC package used.
+      More details in include/dt-bindings/pinctrl/stm32-pinfunc.h
     $ref: /schemas/types.yaml#/definitions/uint32
     enum: [1, 2, 4, 8]
 

@@ -14,6 +14,14 @@ static inline void __iomem *acpi_os_ioremap(acpi_physical_address phys,
 }
 #endif
 
+#ifndef acpi_os_memmap
+static inline void __iomem *acpi_os_memmap(acpi_physical_address phys,
+					    acpi_size size)
+{
+	return ioremap_cache(phys, size);
+}
+#endif
+
 extern bool acpi_permanent_mmap;
 
 void __iomem __ref
@@ -21,7 +29,7 @@ void __iomem __ref
 void __ref acpi_os_unmap_iomem(void __iomem *virt, acpi_size size);
 void __iomem *acpi_os_get_iomem(acpi_physical_address phys, unsigned int size);
 
-int acpi_os_map_generic_address(struct acpi_generic_address *addr);
+void __iomem *acpi_os_map_generic_address(struct acpi_generic_address *addr);
 void acpi_os_unmap_generic_address(struct acpi_generic_address *addr);
 
 #endif

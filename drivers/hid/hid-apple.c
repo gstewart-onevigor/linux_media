@@ -60,6 +60,7 @@ MODULE_PARM_DESC(swap_fn_leftctrl, "Swap the Fn and left Control keys. "
 struct apple_sc {
 	unsigned long quirks;
 	unsigned int fn_on;
+	unsigned int fn_found;
 	DECLARE_BITMAP(pressed_numlock, KEY_CNT);
 };
 
@@ -186,6 +187,15 @@ static const struct apple_key_translation *apple_find_translation(
 	return NULL;
 }
 
+static void input_event_with_scancode(struct input_dev *input,
+		__u8 type, __u16 code, unsigned int hid, __s32 value)
+{
+	if (type == EV_KEY &&
+	    (!test_bit(code, input->key)) == value)
+		input_event(input, EV_MSC, MSC_SCAN, hid);
+	input_event(input, type, code, value);
+}
+
 static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		struct hid_usage *usage, __s32 value)
 {
@@ -198,7 +208,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 
 	if (usage->code == fn_keycode) {
 		asc->fn_on = !!value;
-		input_event(input, usage->type, KEY_FN, value);
+		input_event_with_scancode(input, usage->type, KEY_FN,
+				usage->hid, value);
 		return 1;
 	}
 
@@ -239,7 +250,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 				code = do_translate ? trans->to : trans->from;
 			}
 
-			input_event(input, usage->type, code, value);
+			input_event_with_scancode(input, usage->type, code,
+					usage->hid, value);
 			return 1;
 		}
 
@@ -257,8 +269,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 					clear_bit(usage->code,
 							asc->pressed_numlock);
 
-				input_event(input, usage->type, trans->to,
-						value);
+				input_event_with_scancode(input, usage->type,
+						trans->to, usage->hid, value);
 			}
 
 			return 1;
@@ -269,7 +281,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 		if (hid->country == HID_COUNTRY_INTERNATIONAL_ISO) {
 			trans = apple_find_translation(apple_iso_keyboard, usage->code);
 			if (trans) {
-				input_event(input, usage->type, trans->to, value);
+				input_event_with_scancode(input, usage->type,
+						trans->to, usage->hid, value);
 				return 1;
 			}
 		}
@@ -278,7 +291,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 	if (swap_opt_cmd) {
 		trans = apple_find_translation(swapped_option_cmd_keys, usage->code);
 		if (trans) {
-			input_event(input, usage->type, trans->to, value);
+			input_event_with_scancode(input, usage->type,
+					trans->to, usage->hid, value);
 			return 1;
 		}
 	}
@@ -286,7 +300,8 @@ static int hidinput_apple_event(struct hid_device *hid, struct input_dev *input,
 	if (swap_fn_leftctrl) {
 		trans = apple_find_translation(swapped_fn_leftctrl_keys, usage->code);
 		if (trans) {
-			input_event(input, usage->type, trans->to, value);
+			input_event_with_scancode(input, usage->type,
+					trans->to, usage->hid, value);
 			return 1;
 		}
 	}
@@ -305,8 +320,8 @@ static int apple_event(struct hid_device *hdev, struct hid_field *field,
 
 	if ((asc->quirks & APPLE_INVERT_HWHEEL) &&
 			usage->code == REL_HWHEEL) {
-		input_event(field->hidinput->input, usage->type, usage->code,
-				-value);
+		input_event_with_scancode(field->hidinput->input, usage->type,
+				usage->code, usage->hid, -value);
 		return 1;
 	}
 
@@ -365,12 +380,15 @@ static int apple_input_mapping(struct hid_device *hdev, struct hid_input *hi,
 		struct hid_field *field, struct hid_usage *usage,
 		unsigned long **bit, int *max)
 {
+	struct apple_sc *asc = hid_get_drvdata(hdev);
+
 	if (usage->hid == (HID_UP_CUSTOM | 0x0003) ||
 			usage->hid == (HID_UP_MSVENDOR | 0x0003) ||
 			usage->hid == (HID_UP_HPVENDOR2 | 0x0003)) {
 		/* The fn key on Apple USB keyboards */
 		set_bit(EV_REP, hi->input->evbit);
 		hid_map_usage_clear(hi, usage, bit, max, EV_KEY, KEY_FN);
+		asc->fn_found = true;
 		apple_setup_input(hi->input);
 		return 1;
 	}
@@ -392,6 +410,19 @@ static int apple_input_mapped(struct hid_device *hdev, struct hid_input *hi,
 			hid_map_usage(hi, usage, bit, max, EV_KEY, BTN_2);
 		else if (usage->code == BTN_2)
 			hid_map_usage(hi, usage, bit, max, EV_KEY, BTN_1);
+	}
+
+	return 0;
+}
+
+static int apple_input_configured(struct hid_device *hdev,
+		struct hid_input *hidinput)
+{
+	struct apple_sc *asc = hid_get_drvdata(hdev);
+
+	if ((asc->quirks & APPLE_HAS_FN) && !asc->fn_found) {
+		hid_info(hdev, "Fn key not found (Apple Wireless Keyboard clone?), disabling Fn key handling\n");
+		asc->quirks = 0;
 	}
 
 	return 0;
@@ -484,7 +515,11 @@ static const struct hid_device_id apple_devices[] = {
 			APPLE_RDESC_JIS },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_REVB_ANSI),
 		.driver_data = APPLE_HAS_FN },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_REVB_ANSI),
+		.driver_data = APPLE_HAS_FN },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_REVB_ISO),
+		.driver_data = APPLE_HAS_FN },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_REVB_ISO),
 		.driver_data = APPLE_HAS_FN },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_APPLE, USB_DEVICE_ID_APPLE_ALU_REVB_JIS),
 		.driver_data = APPLE_HAS_FN },
@@ -611,6 +646,7 @@ static struct hid_driver apple_driver = {
 	.event = apple_event,
 	.input_mapping = apple_input_mapping,
 	.input_mapped = apple_input_mapped,
+	.input_configured = apple_input_configured,
 };
 module_hid_driver(apple_driver);
 

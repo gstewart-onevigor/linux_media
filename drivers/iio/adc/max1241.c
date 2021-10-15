@@ -147,8 +147,6 @@ static int max1241_probe(struct spi_device *spi)
 	adc->spi = spi;
 	mutex_init(&adc->lock);
 
-	spi_set_drvdata(spi, indio_dev);
-
 	adc->vdd = devm_regulator_get(dev, "vdd");
 	if (IS_ERR(adc->vdd)) {
 		dev_err(dev, "failed to get vdd regulator\n");
@@ -192,7 +190,6 @@ static int max1241_probe(struct spi_device *spi)
 		dev_dbg(dev, "no shutdown pin passed, low-power mode disabled");
 
 	indio_dev->name = spi_get_device_id(spi)->name;
-	indio_dev->dev.parent = dev;
 	indio_dev->info = &max1241_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = max1241_channels;

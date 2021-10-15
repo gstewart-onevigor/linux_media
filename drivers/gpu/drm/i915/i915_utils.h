@@ -201,6 +201,11 @@ __check_struct_size(size_t base, size_t arr, size_t count, size_t *size)
 	__T;								\
 })
 
+static __always_inline ptrdiff_t ptrdiff(const void *a, const void *b)
+{
+	return a - b;
+}
+
 /*
  * container_of_user: Extract the superclass from a pointer to a member.
  *
@@ -264,19 +269,6 @@ static inline int list_is_last_rcu(const struct list_head *list,
 				   const struct list_head *head)
 {
 	return READ_ONCE(list->next) == head;
-}
-
-/*
- * Wait until the work is finally complete, even if it tries to postpone
- * by requeueing itself. Note, that if the worker never cancels itself,
- * we will spin forever.
- */
-static inline void drain_delayed_work(struct delayed_work *dw)
-{
-	do {
-		while (flush_delayed_work(dw))
-			;
-	} while (delayed_work_pending(dw));
 }
 
 static inline unsigned long msecs_to_jiffies_timeout(const unsigned int m)
@@ -431,12 +423,18 @@ static inline const char *onoff(bool v)
 	return v ? "on" : "off";
 }
 
+static inline const char *enabledisable(bool v)
+{
+	return v ? "enable" : "disable";
+}
+
 static inline const char *enableddisabled(bool v)
 {
 	return v ? "enabled" : "disabled";
 }
 
-static inline void add_taint_for_CI(unsigned int taint)
+void add_taint_for_CI(struct drm_i915_private *i915, unsigned int taint);
+static inline void __add_taint_for_CI(unsigned int taint)
 {
 	/*
 	 * The system is "ok", just about surviving for the user, but
@@ -450,9 +448,14 @@ static inline void add_taint_for_CI(unsigned int taint)
 void cancel_timer(struct timer_list *t);
 void set_timer_ms(struct timer_list *t, unsigned long timeout);
 
+static inline bool timer_active(const struct timer_list *t)
+{
+	return READ_ONCE(t->expires);
+}
+
 static inline bool timer_expired(const struct timer_list *t)
 {
-	return READ_ONCE(t->expires) && !timer_pending(t);
+	return timer_active(t) && !timer_pending(t);
 }
 
 /*

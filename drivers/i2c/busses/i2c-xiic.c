@@ -46,34 +46,36 @@ enum xiic_endian {
 
 /**
  * struct xiic_i2c - Internal representation of the XIIC I2C bus
- * @dev:	Pointer to device structure
- * @base:	Memory base of the HW registers
- * @wait:	Wait queue for callers
- * @adap:	Kernel adapter representation
- * @tx_msg:	Messages from above to be sent
- * @lock:	Mutual exclusion
- * @tx_pos:	Current pos in TX message
- * @nmsgs:	Number of messages in tx_msg
- * @state:	See STATE_
- * @rx_msg:	Current RX message
- * @rx_pos:	Position within current RX message
+ * @dev: Pointer to device structure
+ * @base: Memory base of the HW registers
+ * @wait: Wait queue for callers
+ * @adap: Kernel adapter representation
+ * @tx_msg: Messages from above to be sent
+ * @lock: Mutual exclusion
+ * @tx_pos: Current pos in TX message
+ * @nmsgs: Number of messages in tx_msg
+ * @rx_msg: Current RX message
+ * @rx_pos: Position within current RX message
  * @endianness: big/little-endian byte order
- * @clk:	Pointer to AXI4-lite input clock
+ * @clk: Pointer to AXI4-lite input clock
+ * @state: See STATE_
+ * @singlemaster: Indicates bus is single master
  */
 struct xiic_i2c {
-	struct device		*dev;
-	void __iomem		*base;
-	wait_queue_head_t	wait;
-	struct i2c_adapter	adap;
-	struct i2c_msg		*tx_msg;
-	struct mutex		lock;
-	unsigned int		tx_pos;
-	unsigned int		nmsgs;
-	enum xilinx_i2c_state	state;
-	struct i2c_msg		*rx_msg;
-	int			rx_pos;
-	enum xiic_endian	endianness;
+	struct device *dev;
+	void __iomem *base;
+	wait_queue_head_t wait;
+	struct i2c_adapter adap;
+	struct i2c_msg *tx_msg;
+	struct mutex lock;
+	unsigned int tx_pos;
+	unsigned int nmsgs;
+	struct i2c_msg *rx_msg;
+	int rx_pos;
+	enum xiic_endian endianness;
 	struct clk *clk;
+	enum xilinx_i2c_state state;
+	bool singlemaster;
 };
 
 
@@ -526,6 +528,15 @@ static int xiic_busy(struct xiic_i2c *i2c)
 	if (i2c->tx_msg)
 		return -EBUSY;
 
+	/* In single master mode bus can only be busy, when in use by this
+	 * driver. If the register indicates bus being busy for some reason we
+	 * should ignore it, since bus will never be released and i2c will be
+	 * stuck forever.
+	 */
+	if (i2c->singlemaster) {
+		return 0;
+	}
+
 	/* for instance if previous transfer was terminated due to TX error
 	 * it might be that the bus is on it's way to become available
 	 * give it at most 3 ms to wake
@@ -695,7 +706,7 @@ static int xiic_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	dev_dbg(adap->dev.parent, "%s entry SR: 0x%x\n", __func__,
 		xiic_getreg8(i2c, XIIC_SR_REG_OFFSET));
 
-	err = pm_runtime_get_sync(i2c->dev);
+	err = pm_runtime_resume_and_get(i2c->dev);
 	if (err < 0)
 		return err;
 
@@ -787,11 +798,10 @@ static int xiic_i2c_probe(struct platform_device *pdev)
 	init_waitqueue_head(&i2c->wait);
 
 	i2c->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(i2c->clk)) {
-		if (PTR_ERR(i2c->clk) != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "input clock not found.\n");
-		return PTR_ERR(i2c->clk);
-	}
+	if (IS_ERR(i2c->clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(i2c->clk),
+				     "input clock not found.\n");
+
 	ret = clk_prepare_enable(i2c->clk);
 	if (ret) {
 		dev_err(&pdev->dev, "Unable to enable clock.\n");
@@ -810,6 +820,9 @@ static int xiic_i2c_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Cannot claim IRQ\n");
 		goto err_clk_dis;
 	}
+
+	i2c->singlemaster =
+		of_property_read_bool(pdev->dev.of_node, "single-master");
 
 	/*
 	 * Detect endianness
@@ -859,7 +872,7 @@ static int xiic_i2c_remove(struct platform_device *pdev)
 	/* remove adapter & data */
 	i2c_del_adapter(&i2c->adap);
 
-	ret = pm_runtime_get_sync(i2c->dev);
+	ret = pm_runtime_resume_and_get(i2c->dev);
 	if (ret < 0)
 		return ret;
 

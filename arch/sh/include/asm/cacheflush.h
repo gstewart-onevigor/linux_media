@@ -2,8 +2,6 @@
 #ifndef __ASM_SH_CACHEFLUSH_H
 #define __ASM_SH_CACHEFLUSH_H
 
-#ifdef __KERNEL__
-
 #include <linux/mm.h>
 
 /*
@@ -65,6 +63,8 @@ static inline void flush_anon_page(struct vm_area_struct *vma,
 	if (boot_cpu_data.dcache.n_aliases && PageAnon(page))
 		__flush_anon_page(page, vmaddr);
 }
+
+#define ARCH_IMPLEMENTS_FLUSH_KERNEL_VMAP_RANGE 1
 static inline void flush_kernel_vmap_range(void *addr, int size)
 {
 	__flush_wback_region(addr, size);
@@ -72,12 +72,6 @@ static inline void flush_kernel_vmap_range(void *addr, int size)
 static inline void invalidate_kernel_vmap_range(void *addr, int size)
 {
 	__flush_invalidate_region(addr, size);
-}
-
-#define ARCH_HAS_FLUSH_KERNEL_DCACHE_PAGE
-static inline void flush_kernel_dcache_page(struct page *page)
-{
-	flush_dcache_page(page);
 }
 
 extern void copy_to_user_page(struct vm_area_struct *vma,
@@ -109,5 +103,4 @@ static inline void *sh_cacheop_vaddr(void *vaddr)
 	return vaddr;
 }
 
-#endif /* __KERNEL__ */
 #endif /* __ASM_SH_CACHEFLUSH_H */

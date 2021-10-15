@@ -37,6 +37,7 @@
 #include <asm/pci_dma.h>
 
 #include "pci_bus.h"
+#include "pci_iov.h"
 
 /* list of all detected zpci devices */
 static LIST_HEAD(zpci_list);
@@ -112,13 +113,16 @@ int zpci_register_ioat(struct zpci_dev *zdev, u8 dmaas,
 {
 	u64 req = ZPCI_CREATE_REQ(zdev->fh, dmaas, ZPCI_MOD_FC_REG_IOAT);
 	struct zpci_fib fib = {0};
-	u8 status;
+	u8 cc, status;
 
 	WARN_ON_ONCE(iota & 0x3fff);
 	fib.pba = base;
 	fib.pal = limit;
 	fib.iota = iota | ZPCI_IOTA_RTTO_FLAG;
-	return zpci_mod_fc(req, &fib, &status) ? -EIO : 0;
+	cc = zpci_mod_fc(req, &fib, &status);
+	if (cc)
+		zpci_dbg(3, "reg ioat fid:%x, cc:%d, status:%d\n", zdev->fid, cc, status);
+	return cc;
 }
 
 /* Modify PCI: Unregister I/O address translation parameters */
@@ -129,9 +133,9 @@ int zpci_unregister_ioat(struct zpci_dev *zdev, u8 dmaas)
 	u8 cc, status;
 
 	cc = zpci_mod_fc(req, &fib, &status);
-	if (cc == 3) /* Function already gone. */
-		cc = 0;
-	return cc ? -EIO : 0;
+	if (cc)
+		zpci_dbg(3, "unreg ioat fid:%x, cc:%d, status:%d\n", zdev->fid, cc, status);
+	return cc;
 }
 
 /* Modify PCI: Set PCI function measurement parameters */
@@ -226,7 +230,7 @@ void __iowrite64_copy(void __iomem *to, const void *from, size_t count)
        zpci_memcpy_toio(to, from, count);
 }
 
-void __iomem *ioremap(phys_addr_t addr, size_t size)
+static void __iomem *__ioremap(phys_addr_t addr, size_t size, pgprot_t prot)
 {
 	unsigned long offset, vaddr;
 	struct vm_struct *area;
@@ -247,13 +251,36 @@ void __iomem *ioremap(phys_addr_t addr, size_t size)
 		return NULL;
 
 	vaddr = (unsigned long) area->addr;
-	if (ioremap_page_range(vaddr, vaddr + size, addr, PAGE_KERNEL)) {
+	if (ioremap_page_range(vaddr, vaddr + size, addr, prot)) {
 		free_vm_area(area);
 		return NULL;
 	}
 	return (void __iomem *) ((unsigned long) area->addr + offset);
 }
+
+void __iomem *ioremap_prot(phys_addr_t addr, size_t size, unsigned long prot)
+{
+	return __ioremap(addr, size, __pgprot(prot));
+}
+EXPORT_SYMBOL(ioremap_prot);
+
+void __iomem *ioremap(phys_addr_t addr, size_t size)
+{
+	return __ioremap(addr, size, PAGE_KERNEL);
+}
 EXPORT_SYMBOL(ioremap);
+
+void __iomem *ioremap_wc(phys_addr_t addr, size_t size)
+{
+	return __ioremap(addr, size, pgprot_writecombine(PAGE_KERNEL));
+}
+EXPORT_SYMBOL(ioremap_wc);
+
+void __iomem *ioremap_wt(phys_addr_t addr, size_t size)
+{
+	return __ioremap(addr, size, pgprot_writethrough(PAGE_KERNEL));
+}
+EXPORT_SYMBOL(ioremap_wt);
 
 void iounmap(volatile void __iomem *addr)
 {
@@ -390,15 +417,6 @@ static struct pci_ops pci_root_ops = {
 	.write = pci_write,
 };
 
-#ifdef CONFIG_PCI_IOV
-static struct resource iov_res = {
-	.name	= "PCI IOV res",
-	.start	= 0,
-	.end	= -1,
-	.flags	= IORESOURCE_MEM,
-};
-#endif
-
 static void zpci_map_resources(struct pci_dev *pdev)
 {
 	struct zpci_dev *zdev = to_zpci(pdev);
@@ -419,16 +437,7 @@ static void zpci_map_resources(struct pci_dev *pdev)
 		pdev->resource[i].end = pdev->resource[i].start + len - 1;
 	}
 
-#ifdef CONFIG_PCI_IOV
-	for (i = 0; i < PCI_SRIOV_NUM_BARS; i++) {
-		int bar = i + PCI_IOV_RESOURCES;
-
-		len = pci_resource_len(pdev, bar);
-		if (!len)
-			continue;
-		pdev->resource[bar].parent = &iov_res;
-	}
-#endif
+	zpci_iov_map_resources(pdev);
 }
 
 static void zpci_unmap_resources(struct pci_dev *pdev)
@@ -532,6 +541,7 @@ int zpci_setup_bus_resources(struct zpci_dev *zdev,
 		zdev->bars[i].res = res;
 		pci_add_resource(resources, res);
 	}
+	zdev->has_resources = 1;
 
 	return 0;
 }
@@ -548,13 +558,17 @@ static void zpci_cleanup_bus_resources(struct zpci_dev *zdev)
 		release_resource(zdev->bars[i].res);
 		kfree(zdev->bars[i].res);
 	}
+	zdev->has_resources = 0;
 }
 
 int pcibios_add_device(struct pci_dev *pdev)
 {
+	struct zpci_dev *zdev = to_zpci(pdev);
 	struct resource *res;
 	int i;
 
+	/* The pdev has a reference to the zdev via its bus */
+	zpci_zdev_get(zdev);
 	if (pdev->is_physfn)
 		pdev->no_vf_scan = 1;
 
@@ -574,7 +588,10 @@ int pcibios_add_device(struct pci_dev *pdev)
 
 void pcibios_release_device(struct pci_dev *pdev)
 {
+	struct zpci_dev *zdev = to_zpci(pdev);
+
 	zpci_unmap_resources(pdev);
+	zpci_zdev_put(zdev);
 }
 
 int pcibios_enable_device(struct pci_dev *pdev, int mask)
@@ -645,94 +662,189 @@ void zpci_free_domain(int domain)
 
 int zpci_enable_device(struct zpci_dev *zdev)
 {
-	int rc;
+	u32 fh = zdev->fh;
+	int rc = 0;
 
-	rc = clp_enable_fh(zdev, ZPCI_NR_DMA_SPACES);
-	if (rc)
-		goto out;
-
-	rc = zpci_dma_init_device(zdev);
-	if (rc)
-		goto out_dma;
-
-	zdev->state = ZPCI_FN_STATE_ONLINE;
-	return 0;
-
-out_dma:
-	clp_disable_fh(zdev);
-out:
+	if (clp_enable_fh(zdev, &fh, ZPCI_NR_DMA_SPACES))
+		rc = -EIO;
+	else
+		zdev->fh = fh;
 	return rc;
 }
-EXPORT_SYMBOL_GPL(zpci_enable_device);
 
 int zpci_disable_device(struct zpci_dev *zdev)
 {
-	zpci_dma_exit_device(zdev);
-	return clp_disable_fh(zdev);
-}
-EXPORT_SYMBOL_GPL(zpci_disable_device);
+	u32 fh = zdev->fh;
+	int cc, rc = 0;
 
-int zpci_create_device(struct zpci_dev *zdev)
+	cc = clp_disable_fh(zdev, &fh);
+	if (!cc) {
+		zdev->fh = fh;
+	} else if (cc == CLP_RC_SETPCIFN_ALRDY) {
+		pr_info("Disabling PCI function %08x had no effect as it was already disabled\n",
+			zdev->fid);
+		/* Function is already disabled - update handle */
+		rc = clp_refresh_fh(zdev->fid, &fh);
+		if (!rc) {
+			zdev->fh = fh;
+			rc = -EINVAL;
+		}
+	} else {
+		rc = -EIO;
+	}
+	return rc;
+}
+
+/**
+ * zpci_create_device() - Create a new zpci_dev and add it to the zbus
+ * @fid: Function ID of the device to be created
+ * @fh: Current Function Handle of the device to be created
+ * @state: Initial state after creation either Standby or Configured
+ *
+ * Creates a new zpci device and adds it to its, possibly newly created, zbus
+ * as well as zpci_list.
+ *
+ * Returns: the zdev on success or an error pointer otherwise
+ */
+struct zpci_dev *zpci_create_device(u32 fid, u32 fh, enum zpci_state state)
 {
+	struct zpci_dev *zdev;
 	int rc;
 
+	zpci_dbg(3, "add fid:%x, fh:%x, c:%d\n", fid, fh, state);
+	zdev = kzalloc(sizeof(*zdev), GFP_KERNEL);
+	if (!zdev)
+		return ERR_PTR(-ENOMEM);
+
+	/* FID and Function Handle are the static/dynamic identifiers */
+	zdev->fid = fid;
+	zdev->fh = fh;
+
+	/* Query function properties and update zdev */
+	rc = clp_query_pci_fn(zdev);
+	if (rc)
+		goto error;
+	zdev->state =  state;
+
 	kref_init(&zdev->kref);
+	mutex_init(&zdev->lock);
+
+	rc = zpci_init_iommu(zdev);
+	if (rc)
+		goto error;
+
+	rc = zpci_bus_device_register(zdev, &pci_root_ops);
+	if (rc)
+		goto error_destroy_iommu;
 
 	spin_lock(&zpci_list_lock);
 	list_add_tail(&zdev->entry, &zpci_list);
 	spin_unlock(&zpci_list_lock);
 
-	rc = zpci_init_iommu(zdev);
-	if (rc)
-		goto out;
+	return zdev;
 
-	mutex_init(&zdev->lock);
-	if (zdev->state == ZPCI_FN_STATE_CONFIGURED) {
-		rc = zpci_enable_device(zdev);
+error_destroy_iommu:
+	zpci_destroy_iommu(zdev);
+error:
+	zpci_dbg(0, "add fid:%x, rc:%d\n", fid, rc);
+	kfree(zdev);
+	return ERR_PTR(rc);
+}
+
+/**
+ * zpci_scan_configured_device() - Scan a freshly configured zpci_dev
+ * @zdev: The zpci_dev to be configured
+ * @fh: The general function handle supplied by the platform
+ *
+ * Given a device in the configuration state Configured, enables, scans and
+ * adds it to the common code PCI subsystem if possible. If the PCI device is
+ * parked because we can not yet create a PCI bus because we have not seen
+ * function 0, it is ignored but will be scanned once function 0 appears.
+ * If any failure occurs, the zpci_dev is left disabled.
+ *
+ * Return: 0 on success, or an error code otherwise
+ */
+int zpci_scan_configured_device(struct zpci_dev *zdev, u32 fh)
+{
+	int rc;
+
+	zdev->fh = fh;
+	/* the PCI function will be scanned once function 0 appears */
+	if (!zdev->zbus->bus)
+		return 0;
+
+	/* For function 0 on a multi-function bus scan whole bus as we might
+	 * have to pick up existing functions waiting for it to allow creating
+	 * the PCI bus
+	 */
+	if (zdev->devfn == 0 && zdev->zbus->multifunction)
+		rc = zpci_bus_scan_bus(zdev->zbus);
+	else
+		rc = zpci_bus_scan_device(zdev);
+
+	return rc;
+}
+
+/**
+ * zpci_deconfigure_device() - Deconfigure a zpci_dev
+ * @zdev: The zpci_dev to configure
+ *
+ * Deconfigure a zPCI function that is currently configured and possibly known
+ * to the common code PCI subsystem.
+ * If any failure occurs the device is left as is.
+ *
+ * Return: 0 on success, or an error code otherwise
+ */
+int zpci_deconfigure_device(struct zpci_dev *zdev)
+{
+	int rc;
+
+	if (zdev->zbus->bus)
+		zpci_bus_remove_device(zdev, false);
+
+	if (zdev->dma_table) {
+		rc = zpci_dma_exit_device(zdev);
 		if (rc)
-			goto out_destroy_iommu;
+			return rc;
+	}
+	if (zdev_enabled(zdev)) {
+		rc = zpci_disable_device(zdev);
+		if (rc)
+			return rc;
 	}
 
-	rc = zpci_bus_device_register(zdev, &pci_root_ops);
+	rc = sclp_pci_deconfigure(zdev->fid);
+	zpci_dbg(3, "deconf fid:%x, rc:%d\n", zdev->fid, rc);
 	if (rc)
-		goto out_disable;
+		return rc;
+	zdev->state = ZPCI_FN_STATE_STANDBY;
 
 	return 0;
-
-out_disable:
-	if (zdev->state == ZPCI_FN_STATE_ONLINE)
-		zpci_disable_device(zdev);
-
-out_destroy_iommu:
-	zpci_destroy_iommu(zdev);
-out:
-	spin_lock(&zpci_list_lock);
-	list_del(&zdev->entry);
-	spin_unlock(&zpci_list_lock);
-	return rc;
 }
 
 void zpci_release_device(struct kref *kref)
 {
 	struct zpci_dev *zdev = container_of(kref, struct zpci_dev, kref);
+	int ret;
 
-	if (zdev->zbus->bus) {
-		struct pci_dev *pdev;
+	if (zdev->zbus->bus)
+		zpci_bus_remove_device(zdev, false);
 
-		pdev = pci_get_slot(zdev->zbus->bus, zdev->devfn);
-		if (pdev)
-			pci_stop_and_remove_bus_device_locked(pdev);
-	}
+	if (zdev->dma_table)
+		zpci_dma_exit_device(zdev);
+	if (zdev_enabled(zdev))
+		zpci_disable_device(zdev);
 
 	switch (zdev->state) {
-	case ZPCI_FN_STATE_ONLINE:
 	case ZPCI_FN_STATE_CONFIGURED:
-		zpci_disable_device(zdev);
+		ret = sclp_pci_deconfigure(zdev->fid);
+		zpci_dbg(3, "deconf fid:%x, rc:%d\n", zdev->fid, ret);
 		fallthrough;
 	case ZPCI_FN_STATE_STANDBY:
 		if (zdev->has_hp_slot)
 			zpci_exit_slot(zdev);
-		zpci_cleanup_bus_resources(zdev);
+		if (zdev->has_resources)
+			zpci_cleanup_bus_resources(zdev);
 		zpci_bus_device_unregister(zdev);
 		zpci_destroy_iommu(zdev);
 		fallthrough;
@@ -776,6 +888,9 @@ static int zpci_mem_init(void)
 	if (!zpci_iomap_bitmap)
 		goto error_iomap_bitmap;
 
+	if (static_branch_likely(&have_mio))
+		clp_setup_writeback_mio();
+
 	return 0;
 error_iomap_bitmap:
 	kfree(zpci_iomap_start);
@@ -793,7 +908,6 @@ static void zpci_mem_exit(void)
 }
 
 static unsigned int s390_pci_probe __initdata = 1;
-static unsigned int s390_pci_no_mio __initdata;
 unsigned int s390_pci_force_floating __initdata;
 static unsigned int s390_pci_initialized;
 
@@ -804,7 +918,7 @@ char * __init pcibios_setup(char *str)
 		return NULL;
 	}
 	if (!strcmp(str, "nomio")) {
-		s390_pci_no_mio = 1;
+		S390_lowcore.machine_flags &= ~MACHINE_FLAG_PCI_MIO;
 		return NULL;
 	}
 	if (!strcmp(str, "force_floating")) {
@@ -830,10 +944,12 @@ static int __init pci_base_init(void)
 	if (!s390_pci_probe)
 		return 0;
 
-	if (!test_facility(69) || !test_facility(71))
+	if (!test_facility(69) || !test_facility(71)) {
+		pr_info("PCI is not supported because CPU facilities 69 or 71 are not available\n");
 		return 0;
+	}
 
-	if (test_facility(153) && !s390_pci_no_mio) {
+	if (MACHINE_HAS_PCI_MIO) {
 		static_branch_enable(&have_mio);
 		ctl_set_bit(2, 5);
 	}
@@ -857,6 +973,7 @@ static int __init pci_base_init(void)
 	rc = clp_scan_pci_devices();
 	if (rc)
 		goto out_find;
+	zpci_bus_scan_busses();
 
 	s390_pci_initialized = 1;
 	return 0;
@@ -873,9 +990,3 @@ out:
 	return rc;
 }
 subsys_initcall_sync(pci_base_init);
-
-void zpci_rescan(void)
-{
-	if (zpci_is_enabled())
-		clp_rescan_pci_devices_simple(NULL);
-}

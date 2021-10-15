@@ -19,8 +19,6 @@
 #include <asm/cmpxchg.h>
 #include <asm/barrier.h>
 
-#define ATOMIC_INIT(i)	{ (i) }
-
 /*
  * This Xtensa implementation assumes that the right mechanism
  * for exclusion is for locking interrupts to level EXCM_LEVEL.
@@ -45,7 +43,7 @@
  *
  * Atomically reads the value of @v.
  */
-#define atomic_read(v)		READ_ONCE((v)->counter)
+#define arch_atomic_read(v)		READ_ONCE((v)->counter)
 
 /**
  * atomic_set - set atomic variable
@@ -54,11 +52,11 @@
  *
  * Atomically sets the value of @v to @i.
  */
-#define atomic_set(v,i)		WRITE_ONCE((v)->counter, (i))
+#define arch_atomic_set(v,i)		WRITE_ONCE((v)->counter, (i))
 
 #if XCHAL_HAVE_EXCLUSIVE
 #define ATOMIC_OP(op)							\
-static inline void atomic_##op(int i, atomic_t *v)			\
+static inline void arch_atomic_##op(int i, atomic_t *v)			\
 {									\
 	unsigned long tmp;						\
 	int result;							\
@@ -76,7 +74,7 @@ static inline void atomic_##op(int i, atomic_t *v)			\
 }									\
 
 #define ATOMIC_OP_RETURN(op)						\
-static inline int atomic_##op##_return(int i, atomic_t *v)		\
+static inline int arch_atomic_##op##_return(int i, atomic_t *v)		\
 {									\
 	unsigned long tmp;						\
 	int result;							\
@@ -97,7 +95,7 @@ static inline int atomic_##op##_return(int i, atomic_t *v)		\
 }
 
 #define ATOMIC_FETCH_OP(op)						\
-static inline int atomic_fetch_##op(int i, atomic_t *v)			\
+static inline int arch_atomic_fetch_##op(int i, atomic_t *v)		\
 {									\
 	unsigned long tmp;						\
 	int result;							\
@@ -118,7 +116,7 @@ static inline int atomic_fetch_##op(int i, atomic_t *v)			\
 
 #elif XCHAL_HAVE_S32C1I
 #define ATOMIC_OP(op)							\
-static inline void atomic_##op(int i, atomic_t * v)			\
+static inline void arch_atomic_##op(int i, atomic_t * v)		\
 {									\
 	unsigned long tmp;						\
 	int result;							\
@@ -137,7 +135,7 @@ static inline void atomic_##op(int i, atomic_t * v)			\
 }									\
 
 #define ATOMIC_OP_RETURN(op)						\
-static inline int atomic_##op##_return(int i, atomic_t * v)		\
+static inline int arch_atomic_##op##_return(int i, atomic_t * v)	\
 {									\
 	unsigned long tmp;						\
 	int result;							\
@@ -159,7 +157,7 @@ static inline int atomic_##op##_return(int i, atomic_t * v)		\
 }
 
 #define ATOMIC_FETCH_OP(op)						\
-static inline int atomic_fetch_##op(int i, atomic_t * v)		\
+static inline int arch_atomic_fetch_##op(int i, atomic_t * v)		\
 {									\
 	unsigned long tmp;						\
 	int result;							\
@@ -182,7 +180,7 @@ static inline int atomic_fetch_##op(int i, atomic_t * v)		\
 #else /* XCHAL_HAVE_S32C1I */
 
 #define ATOMIC_OP(op)							\
-static inline void atomic_##op(int i, atomic_t * v)			\
+static inline void arch_atomic_##op(int i, atomic_t * v)		\
 {									\
 	unsigned int vval;						\
 									\
@@ -200,7 +198,7 @@ static inline void atomic_##op(int i, atomic_t * v)			\
 }									\
 
 #define ATOMIC_OP_RETURN(op)						\
-static inline int atomic_##op##_return(int i, atomic_t * v)		\
+static inline int arch_atomic_##op##_return(int i, atomic_t * v)	\
 {									\
 	unsigned int vval;						\
 									\
@@ -220,7 +218,7 @@ static inline int atomic_##op##_return(int i, atomic_t * v)		\
 }
 
 #define ATOMIC_FETCH_OP(op)						\
-static inline int atomic_fetch_##op(int i, atomic_t * v)		\
+static inline int arch_atomic_fetch_##op(int i, atomic_t * v)		\
 {									\
 	unsigned int tmp, vval;						\
 									\
@@ -259,7 +257,7 @@ ATOMIC_OPS(xor)
 #undef ATOMIC_OP_RETURN
 #undef ATOMIC_OP
 
-#define atomic_cmpxchg(v, o, n) ((int)cmpxchg(&((v)->counter), (o), (n)))
-#define atomic_xchg(v, new) (xchg(&((v)->counter), new))
+#define arch_atomic_cmpxchg(v, o, n) ((int)arch_cmpxchg(&((v)->counter), (o), (n)))
+#define arch_atomic_xchg(v, new) (arch_xchg(&((v)->counter), new))
 
 #endif /* _XTENSA_ATOMIC_H */

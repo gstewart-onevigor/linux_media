@@ -109,7 +109,9 @@ enum clock_change_support {
 };
 
 enum output_standard {
-	dm_std_uninitialized = 0, dm_std_cvtr2, dm_std_cvt
+	dm_std_uninitialized = 0,
+	dm_std_cvtr2,
+	dm_std_cvt
 };
 
 enum mpc_combine_affinity {
@@ -179,6 +181,12 @@ enum odm_combine_policy {
 enum immediate_flip_requirement {
 	dm_immediate_flip_not_required,
 	dm_immediate_flip_required,
+};
+
+enum unbounded_requesting_policy {
+	dm_unbounded_requesting,
+	dm_unbounded_requesting_edp_only,
+	dm_unbounded_requesting_disable
 };
 
 #endif

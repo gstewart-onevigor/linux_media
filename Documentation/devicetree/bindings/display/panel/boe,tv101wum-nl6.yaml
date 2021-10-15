@@ -48,12 +48,12 @@ properties:
   port: true
 
 required:
- - compatible
- - reg
- - enable-gpios
- - pp1800-supply
- - avdd-supply
- - avee-supply
+  - compatible
+  - reg
+  - enable-gpios
+  - pp1800-supply
+  - avdd-supply
+  - avee-supply
 
 additionalProperties: false
 
@@ -70,7 +70,6 @@ examples:
             avee-supply = <&ppvarp_lcd>;
             pp1800-supply = <&pp1800_lcd>;
             backlight = <&backlight_lcd0>;
-            status = "okay";
             port {
                 panel_in: endpoint {
                     remote-endpoint = <&dsi_out>;

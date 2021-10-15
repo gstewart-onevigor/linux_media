@@ -1173,10 +1173,9 @@ static int sdhci_omap_probe(struct platform_device *pdev)
 	 * as part of pm_runtime_get_sync.
 	 */
 	pm_runtime_enable(dev);
-	ret = pm_runtime_get_sync(dev);
-	if (ret < 0) {
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret) {
 		dev_err(dev, "pm_runtime_get_sync failed\n");
-		pm_runtime_put_noidle(dev);
 		goto err_rpm_disable;
 	}
 
@@ -1297,6 +1296,7 @@ static struct platform_driver sdhci_omap_driver = {
 	.remove = sdhci_omap_remove,
 	.driver = {
 		   .name = "sdhci-omap",
+		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		   .pm = &sdhci_omap_dev_pm_ops,
 		   .of_match_table = omap_sdhci_match,
 		  },

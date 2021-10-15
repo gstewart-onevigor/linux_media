@@ -47,7 +47,7 @@ xchk_da_process_error(
 		/* Note the badness but don't abort. */
 		sc->sm->sm_flags |= XFS_SCRUB_OFLAG_CORRUPT;
 		*error = 0;
-		/* fall through */
+		fallthrough;
 	default:
 		trace_xchk_file_op_error(sc, ds->dargs.whichfork,
 				xfs_dir2_da_to_db(ds->dargs.geo,
@@ -367,11 +367,11 @@ xchk_da_btree_block(
 	pmaxrecs = &ds->maxrecs[level];
 
 	/* We only started zeroing the header on v5 filesystems. */
-	if (xfs_sb_version_hascrc(&ds->sc->mp->m_sb) && hdr3->hdr.pad)
+	if (xfs_has_crc(ds->sc->mp) && hdr3->hdr.pad)
 		xchk_da_set_corrupt(ds, level);
 
 	/* Check the owner. */
-	if (xfs_sb_version_hascrc(&ip->i_mount->m_sb)) {
+	if (xfs_has_crc(ip->i_mount)) {
 		owner = be64_to_cpu(hdr3->owner);
 		if (owner != ip->i_ino)
 			xchk_da_set_corrupt(ds, level);
@@ -441,6 +441,20 @@ xchk_da_btree_block(
 		goto out_freebp;
 	}
 
+	/*
+	 * If we've been handed a block that is below the dabtree root, does
+	 * its hashval match what the parent block expected to see?
+	 */
+	if (level > 0) {
+		struct xfs_da_node_entry	*key;
+
+		key = xchk_da_btree_node_entry(ds, level - 1);
+		if (be32_to_cpu(key->hashval) != blk->hashval) {
+			xchk_da_set_corrupt(ds, level);
+			goto out_freebp;
+		}
+	}
+
 out:
 	return error;
 out_freebp:
@@ -476,9 +490,7 @@ xchk_da_btree(
 	ds.dargs.whichfork = whichfork;
 	ds.dargs.trans = sc->tp;
 	ds.dargs.op_flags = XFS_DA_OP_OKNOENT;
-	ds.state = xfs_da_state_alloc();
-	ds.state->args = &ds.dargs;
-	ds.state->mp = mp;
+	ds.state = xfs_da_state_alloc(&ds.dargs);
 	ds.sc = sc;
 	ds.private = private;
 	if (whichfork == XFS_ATTR_FORK) {

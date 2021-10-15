@@ -35,6 +35,7 @@
 struct drm_bridge;
 struct drm_bridge_timings;
 struct drm_connector;
+struct drm_display_info;
 struct drm_panel;
 struct edid;
 struct i2c_adapter;
@@ -112,6 +113,7 @@ struct drm_bridge_funcs {
 	 * drm_mode_status Enum
 	 */
 	enum drm_mode_status (*mode_valid)(struct drm_bridge *bridge,
+					   const struct drm_display_info *info,
 					   const struct drm_display_mode *mode);
 
 	/**
@@ -169,6 +171,11 @@ struct drm_bridge_funcs {
 	 * signals) feeding it is still running when this callback is called.
 	 *
 	 * The @disable callback is optional.
+	 *
+	 * NOTE:
+	 *
+	 * This is deprecated, do not use!
+	 * New drivers shall use &drm_bridge_funcs.atomic_disable.
 	 */
 	void (*disable)(struct drm_bridge *bridge);
 
@@ -188,6 +195,11 @@ struct drm_bridge_funcs {
 	 * called.
 	 *
 	 * The @post_disable callback is optional.
+	 *
+	 * NOTE:
+	 *
+	 * This is deprecated, do not use!
+	 * New drivers shall use &drm_bridge_funcs.atomic_post_disable.
 	 */
 	void (*post_disable)(struct drm_bridge *bridge);
 
@@ -213,9 +225,9 @@ struct drm_bridge_funcs {
 	 *
 	 * NOTE:
 	 *
-	 * If a need arises to store and access modes adjusted for other
-	 * locations than the connection between the CRTC and the first bridge,
-	 * the DRM framework will have to be extended with DRM bridge states.
+	 * This is deprecated, do not use!
+	 * New drivers shall set their mode in the
+	 * &drm_bridge_funcs.atomic_enable operation.
 	 */
 	void (*mode_set)(struct drm_bridge *bridge,
 			 const struct drm_display_mode *mode,
@@ -237,6 +249,11 @@ struct drm_bridge_funcs {
 	 * there is one) when this callback is called.
 	 *
 	 * The @pre_enable callback is optional.
+	 *
+	 * NOTE:
+	 *
+	 * This is deprecated, do not use!
+	 * New drivers shall use &drm_bridge_funcs.atomic_pre_enable.
 	 */
 	void (*pre_enable)(struct drm_bridge *bridge);
 
@@ -257,6 +274,11 @@ struct drm_bridge_funcs {
 	 * chain if there is one.
 	 *
 	 * The @enable callback is optional.
+	 *
+	 * NOTE:
+	 *
+	 * This is deprecated, do not use!
+	 * New drivers shall use &drm_bridge_funcs.atomic_enable.
 	 */
 	void (*enable)(struct drm_bridge *bridge);
 
@@ -473,7 +495,7 @@ struct drm_bridge_funcs {
 	 * one of them should be provided.
 	 *
 	 * If drivers need to tweak &drm_bridge_state.input_bus_cfg.flags or
-	 * &drm_bridge_state.output_bus_cfg.flags it should should happen in
+	 * &drm_bridge_state.output_bus_cfg.flags it should happen in
 	 * this function. By default the &drm_bridge_state.output_bus_cfg.flags
 	 * field is set to the next bridge
 	 * &drm_bridge_state.input_bus_cfg.flags value or
@@ -836,6 +858,7 @@ bool drm_bridge_chain_mode_fixup(struct drm_bridge *bridge,
 				 struct drm_display_mode *adjusted_mode);
 enum drm_mode_status
 drm_bridge_chain_mode_valid(struct drm_bridge *bridge,
+			    const struct drm_display_info *info,
 			    const struct drm_display_mode *mode);
 void drm_bridge_chain_disable(struct drm_bridge *bridge);
 void drm_bridge_chain_post_disable(struct drm_bridge *bridge);

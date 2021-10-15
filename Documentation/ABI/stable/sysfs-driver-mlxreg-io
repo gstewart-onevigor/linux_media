@@ -137,7 +137,7 @@ Contact:	Vadim Pasternak <vadimpmellanox.com>
 Description:	These files show the system reset cause, as following:
 		COMEX thermal shutdown; wathchdog power off or reset was derived
 		by one of the next components: COMEX, switch board or by Small Form
-		Factor mezzanine, reset requested from ASIC, reset cuased by BIOS
+		Factor mezzanine, reset requested from ASIC, reset caused by BIOS
 		reload. Value 1 in file means this is reset cause, 0 - otherwise.
 		Only one of the above causes could be 1 at the same time, representing
 		only last reset cause.
@@ -183,7 +183,7 @@ What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/vpd_wp
 Date:		January 2020
 KernelVersion:	5.6
 Contact:	Vadim Pasternak <vadimpmellanox.com>
-Description:	This file allows to overwrite system VPD hardware wrtie
+Description:	This file allows to overwrite system VPD hardware write
 		protection when attribute is set 1.
 
 		The file is read/write.
@@ -206,3 +206,20 @@ Description:	This file exposes the firmware version of burnable voltage
 		regulator devices.
 
 		The file is read only.
+
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld1_pn
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld2_pn
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld3_pn
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld4_pn
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld1_version_min
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld2_version_min
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld3_version_min
+What:		/sys/devices/platform/mlxplat/mlxreg-io/hwmon/hwmon*/cpld4_version_min
+Date:		July 2020
+KernelVersion:	5.9
+Contact:	Vadim Pasternak <vadimpmellanox.com>
+Description:	These files show with which CPLD part numbers and minor
+		versions have been burned CPLD devices equipped on a
+		system.
+
+		The files are read only.
