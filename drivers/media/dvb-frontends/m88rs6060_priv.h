@@ -43,6 +43,9 @@ struct m88rs6060_dev {
 	void (*write_properties)(struct i2c_adapter * i2c, u8 reg, u32 buf);
 	void (*read_properties)(struct i2c_adapter * i2c, u8 reg, u32 * buf);
 
+	void (*write_eeprom) (struct i2c_adapter *i2c,u8 reg, u8 buf);
+	void (*read_eeprom) (struct i2c_adapter *i2c,u8 reg, u8 *buf);
+
 	//for si5351
 	u32 plla_freq;
 	u32 pllb_freq;
@@ -263,32 +266,6 @@ struct MT_FE_CHAN_INFO_DVBS2 {
 #define  SI5351_CLKIN_ENABLE			(1<<7)
 #define  SI5351_XTAL_ENABLE				(1<<6)
 #define  SI5351_MULTISYNTH_ENABLE		(1<<4)
-
-/* Macro definitions */
-
-/*
- * Based on former asm-ppc/div64.h and asm-m68knommu/div64.h
- *
- * The semantics of do_div() are:
- *
- * uint32_t do_div(uint64_t *n, uint32_t base)
- * {
- *      uint32_t remainder = *n % base;
- *      *n = *n / base;
- *      return remainder;
- * }
- *
- * NOTE: macro parameter n is evaluated multiple times,
- *       beware of side effects!
- */
-
-#define do_div1(n,base) {                                      \
-        u32 __base = (base);                               \
-        u32 __rem;                                         \
-        __rem = ((u64)(n)) % __base;                       \
-        (n) = ((u64)(n)) / __base;                         \
-        __rem;                                                  \
- }
 
 /* Enum definitions */
 

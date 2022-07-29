@@ -215,7 +215,7 @@ out_error:
  * ksmbd_kthread_fn() - listen to new SMB connections and callback server
  * @p:		arguments to forker thread
  *
- * Return:	Returns a task_struct or ERR_PTR
+ * Return:	0 on success, error number otherwise
  */
 static int ksmbd_kthread_fn(void *p)
 {
@@ -387,7 +387,7 @@ static void tcp_destroy_socket(struct socket *ksmbd_socket)
 /**
  * create_socket - create socket for ksmbd/0
  *
- * Return:	Returns a task_struct or ERR_PTR
+ * Return:	0 on success, error number otherwise
  */
 static int create_socket(struct interface *iface)
 {
@@ -404,7 +404,7 @@ static int create_socket(struct interface *iface)
 				  &ksmbd_socket);
 		if (ret) {
 			pr_err("Can't create socket for ipv4: %d\n", ret);
-			goto out_error;
+			goto out_clear;
 		}
 
 		sin.sin_family = PF_INET;
@@ -462,6 +462,7 @@ static int create_socket(struct interface *iface)
 
 out_error:
 	tcp_destroy_socket(ksmbd_socket);
+out_clear:
 	iface->ksmbd_socket = NULL;
 	return ret;
 }
@@ -475,7 +476,7 @@ static int ksmbd_netdev_event(struct notifier_block *nb, unsigned long event,
 
 	switch (event) {
 	case NETDEV_UP:
-		if (netdev->priv_flags & IFF_BRIDGE_PORT)
+		if (netif_is_bridge_port(netdev))
 			return NOTIFY_OK;
 
 		list_for_each_entry(iface, &iface_list, entry) {
@@ -584,7 +585,7 @@ int ksmbd_tcp_set_interfaces(char *ifc_list, int ifc_list_sz)
 
 		rtnl_lock();
 		for_each_netdev(&init_net, netdev) {
-			if (netdev->priv_flags & IFF_BRIDGE_PORT)
+			if (netif_is_bridge_port(netdev))
 				continue;
 			if (!alloc_iface(kstrdup(netdev->name, GFP_KERNEL)))
 				return -ENOMEM;

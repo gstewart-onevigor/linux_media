@@ -41,7 +41,15 @@
 #include "rda5816.h"
 #include "m88rs6060.h"
 #include "gx1133.h"
+#include "cxd2878.h"
+
+
 DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
+
+static bool swapfe = false;
+module_param(swapfe, bool, 0444);
+MODULE_PARM_DESC(swapfe, "swap combo frontends order");
+
 
 struct sec_priv {
 	struct tbsecp3_adapter *adap;
@@ -718,6 +726,21 @@ static struct tas2101_config tbs6301_demod_cfg = {
 		.mcuRead_properties = mcu_24cxx_read,
 
 };
+
+
+static struct tas2101_config tbs6304x_demod_cfg = {
+		.i2c_address   = 0x60,
+		.id            = ID_TAS2101,
+		.init          = {0xb0, 0x32, 0x81, 0x57, 0x64, 0x9a, 0x33}, // 0xb1
+		.init2         = 0,
+		.write_properties = ecp3_spi_write,  
+		.read_properties = ecp3_spi_read,
+
+		.mcuWrite_properties = mcu_24cxx_write,  
+		.mcuRead_properties = mcu_24cxx_read,
+
+};
+
 static struct tas2101_config tbs6904_demod_cfg[] = {
 	{
 		.i2c_address   = 0x60,
@@ -1128,6 +1151,96 @@ static int GetTSSpeed(struct i2c_adapter *i2c,int tuner)
 
 	return bit_rate;
 }
+static struct cxd2878_config tbs6209se_cfg[] = {
+	{
+		.addr_slvt = 0x64,
+		.xtal      = SONY_DEMOD_XTAL_24000KHz,
+		.tuner_addr = 0x60,
+		.tuner_xtal = SONY_ASCOT3_XTAL_24000KHz,
+		.ts_mode	= 0,
+		.ts_ser_data = 0,
+		.ts_clk = 1,
+		.ts_valid = 0,
+		.atscCoreDisable = 0,
+		.write_properties = ecp3_spi_write, 
+		.read_properties = ecp3_spi_read,	
+	},
+	{
+		.addr_slvt = 0x6c,
+		.xtal      = SONY_DEMOD_XTAL_24000KHz,
+		.tuner_addr = 0x60,
+		.tuner_xtal = SONY_ASCOT3_XTAL_24000KHz,
+		.ts_mode	= 0,
+		.ts_ser_data = 0,
+		.ts_clk = 1,
+		.ts_valid = 0,
+		.atscCoreDisable = 0,
+		.write_properties = ecp3_spi_write, 
+		.read_properties = ecp3_spi_read,	
+	},	
+
+	{
+		.addr_slvt = 0x65,
+		.xtal      = SONY_DEMOD_XTAL_24000KHz,
+		.tuner_addr = 0x60,
+		.tuner_xtal = SONY_ASCOT3_XTAL_24000KHz,
+		.ts_mode	= 0,
+		.ts_ser_data = 0,
+		.ts_clk = 1,
+		.ts_valid = 0,
+		.atscCoreDisable = 0,
+		.write_properties = ecp3_spi_write, 
+		.read_properties = ecp3_spi_read,	
+	},
+	{
+		.addr_slvt = 0x6D,
+		.xtal      = SONY_DEMOD_XTAL_24000KHz,
+		.tuner_addr = 0x60,
+		.tuner_xtal = SONY_ASCOT3_XTAL_24000KHz,
+		.ts_mode	= 0,
+		.ts_ser_data = 0,
+		.ts_clk = 1,
+		.ts_clk_mask = 0,
+		.ts_valid = 0,
+		.atscCoreDisable = 0,
+		.write_properties = ecp3_spi_write, 
+		.read_properties = ecp3_spi_read,	
+	}	
+};
+
+static struct cxd2878_config tbsserial_cfg = {
+	
+		.addr_slvt = 0x64,
+		.xtal      = SONY_DEMOD_XTAL_24000KHz,
+		.tuner_addr = 0x60,
+		.tuner_xtal = SONY_ASCOT3_XTAL_24000KHz,
+		.ts_mode	= 0,
+		.ts_ser_data = 0,
+		.ts_clk = 1,
+		.ts_clk_mask = 0,
+		.ts_valid = 0,
+		.atscCoreDisable = 0,
+		.write_properties = ecp3_spi_write, 
+		.read_properties = ecp3_spi_read,	
+	};
+static void tbs6209SE_reset_demod(struct tbsecp3_adapter *adapter)
+{
+	struct tbsecp3_dev *dev = adapter->dev;
+	u32 tmp;
+	u32 gpio;
+	if(adapter->nr<4)
+		gpio= 0x4*(adapter->nr);
+	if(adapter->nr>3)
+		gpio = 0x2c+0x4*(adapter->nr-4);
+
+	tmp = tbs_read(TBSECP3_GPIO_BASE, gpio);
+	tmp = tmp &0xfffffffe;
+	tbs_write(TBSECP3_GPIO_BASE, gpio, tmp);	
+	msleep(50);
+	tmp = tmp|0x01;
+	tbs_write(TBSECP3_GPIO_BASE, gpio, tmp);
+	msleep(50);
+}
 static int tbsecp3_frontend_attach(struct tbsecp3_adapter *adapter)
 {
 	struct tbsecp3_dev *dev = adapter->dev;
@@ -1150,12 +1263,29 @@ static int tbsecp3_frontend_attach(struct tbsecp3_adapter *adapter)
 	adapter->i2c_client_demod = NULL;
 	adapter->i2c_client_tuner = NULL;
 
-	if((TBSECP3_BOARD_TBS6304 != dev->info->board_id) && (TBSECP3_BOARD_TBS6308 != dev->info->board_id) && (TBSECP3_BOARD_TBS6302SE != dev->info->board_id)&& (TBSECP3_BOARD_TBS6301SE != dev->info->board_id)){
+	if((TBSECP3_BOARD_TBS6304 != dev->info->board_id) && (TBSECP3_BOARD_TBS6308 != dev->info->board_id) && (TBSECP3_BOARD_TBS6302SE != dev->info->board_id)&&(TBSECP3_BOARD_TBS6209SE != dev->info->board_id)){
 		reset_demod(adapter);
 		set_mac_address(adapter);
 	}
 
 	switch (dev->info->board_id) {
+	   case TBSECP3_BOARD_TBS6209SE:
+	   		tbs6209SE_reset_demod(adapter);
+	   		set_mac_address(adapter);		
+	   		adapter->fe = dvb_attach(cxd2878_attach, &tbs6209se_cfg[(adapter->nr)%4], i2c);
+
+		if (adapter->fe == NULL)
+		    goto frontend_atach_fail;
+	   		break;	
+	   case TBSECP3_BOARD_TBS7230:
+	   case TBSECP3_BOARD_TBS6290TD:
+	   	   adapter->fe = dvb_attach(cxd2878_attach, &tbsserial_cfg, i2c);
+		if (adapter->fe == NULL)
+		    goto frontend_atach_fail;
+		 if(dev->info->board_id==TBSECP3_BOARD_TBS6290TD)
+		 	tbsecp3_ca_init(adapter, adapter->nr);
+		 
+	   break;
 	   case TBSECP3_BOARD_TBS6910SE:
 	   case TBSECP3_BOARD_TBS6904SE:
 	   case TBSECP3_BOARD_TBS6902SE:
@@ -1191,6 +1321,8 @@ static int tbsecp3_frontend_attach(struct tbsecp3_adapter *adapter)
 		 m88rs6060_config.num = adapter->nr;
 		 m88rs6060_config.read_properties = ecp3_spi_read;
 		 m88rs6060_config.write_properties = ecp3_spi_write;
+		 m88rs6060_config.read_eeprom = ecp3_eeprom_read;
+		 m88rs6060_config.write_eeprom = ecp3_eeprom_write;
 		memset(&info, 0, sizeof(struct i2c_board_info));
 		strlcpy(info.type, "m88rs6060", I2C_NAME_SIZE);
 		info.addr = 0x69;
@@ -1393,6 +1525,20 @@ static int tbsecp3_frontend_attach(struct tbsecp3_adapter *adapter)
 		    goto frontend_atach_fail;
 
 		break;
+	case TBSECP3_BOARD_TBS6302X:
+	case TBSECP3_BOARD_TBS6302T:
+		adapter->fe = dvb_attach(tas2971_attach, &tbs6302se_demod_cfg[adapter->nr], i2c);
+		if (adapter->fe == NULL)
+		    goto frontend_atach_fail;
+
+		break;
+	case TBSECP3_BOARD_TBS6304X:
+		adapter->fe = dvb_attach(tas2971_attach, &tbs6304x_demod_cfg, i2c);
+		if (adapter->fe == NULL)
+		    goto frontend_atach_fail;
+
+		break;
+
 	case TBSECP3_BOARD_TBS690a:
 		adapter->fe = dvb_attach(tas2971_attach, &tbs6904_demod_cfg[adapter->nr], i2c);
 		if (adapter->fe == NULL)
@@ -2050,6 +2196,7 @@ int tbsecp3_dvb_init(struct tbsecp3_adapter *adapter)
     struct dvb_adapter *adap = &adapter->dvb_adapter;
     struct dvb_demux *dvbdemux = &adapter->demux;
     struct dmxdev *dmxdev;
+    struct dvb_frontend *fe;
     struct dmx_frontend *fe_hw;
     struct dmx_frontend *fe_mem;
     int ret;
@@ -2130,6 +2277,12 @@ int tbsecp3_dvb_init(struct tbsecp3_adapter *adapter)
         dev_err(&dev->pci_dev->dev, "frontend attach failed\n");
         ret = -ENODEV;
         goto err6;
+    }
+
+    if (adapter->fe && adapter->fe2 && swapfe) {
+        fe = adapter->fe;
+        adapter->fe = adapter->fe2;
+        adapter->fe2 = fe;
     }
 
     ret = dvb_register_frontend(adap, adapter->fe);

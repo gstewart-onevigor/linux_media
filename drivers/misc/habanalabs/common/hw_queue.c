@@ -429,6 +429,9 @@ static int init_signal_cs(struct hl_device *hdev,
 	rc = hl_cs_signal_sob_wraparound_handler(hdev, q_idx, &hw_sob, 1,
 								false);
 
+	job->cs->sob_addr_offset = hw_sob->sob_addr;
+	job->cs->initial_sob_count = prop->next_sob_val - 1;
+
 	return rc;
 }
 
@@ -437,6 +440,7 @@ void hl_hw_queue_encaps_sig_set_sob_info(struct hl_device *hdev,
 			struct hl_cs_compl *cs_cmpl)
 {
 	struct hl_cs_encaps_sig_handle *handle = cs->encaps_sig_hdl;
+	u32 offset = 0;
 
 	cs_cmpl->hw_sob = handle->hw_sob;
 
@@ -446,9 +450,13 @@ void hl_hw_queue_encaps_sig_set_sob_info(struct hl_device *hdev,
 	 * set offset 1 for example he mean to wait only for the first
 	 * signal only, which will be pre_sob_val, and if he set offset 2
 	 * then the value required is (pre_sob_val + 1) and so on...
+	 * if user set wait offset to 0, then treat it as legacy wait cs,
+	 * wait for the next signal.
 	 */
-	cs_cmpl->sob_val = handle->pre_sob_val +
-			(job->encaps_sig_wait_offset - 1);
+	if (job->encaps_sig_wait_offset)
+		offset = job->encaps_sig_wait_offset - 1;
+
+	cs_cmpl->sob_val = handle->pre_sob_val + offset;
 }
 
 static int init_wait_cs(struct hl_device *hdev, struct hl_cs *cs,
@@ -566,7 +574,7 @@ static int encaps_sig_first_staged_cs_handler
 	struct hl_encaps_signals_mgr *mgr;
 	int rc = 0;
 
-	mgr = &hdev->compute_ctx->sig_mgr;
+	mgr = &cs->ctx->sig_mgr;
 
 	spin_lock(&mgr->lock);
 	encaps_sig_hdl = idr_find(&mgr->handles, cs->encaps_sig_hdl_id);

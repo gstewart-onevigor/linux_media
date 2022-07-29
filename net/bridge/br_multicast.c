@@ -82,6 +82,9 @@ static void br_multicast_find_del_pg(struct net_bridge *br,
 				     struct net_bridge_port_group *pg);
 static void __br_multicast_stop(struct net_bridge_mcast *brmctx);
 
+static int br_mc_disabled_update(struct net_device *dev, bool value,
+				 struct netlink_ext_ack *extack);
+
 static struct net_bridge_port_group *
 br_sg_port_find(struct net_bridge *br,
 		struct net_bridge_port_group_sg_key *sg_p)
@@ -1156,6 +1159,7 @@ struct net_bridge_mdb_entry *br_multicast_new_group(struct net_bridge *br,
 		return mp;
 
 	if (atomic_read(&br->mdb_hash_tbl.nelems) >= br->hash_max) {
+		br_mc_disabled_update(br->dev, false, NULL);
 		br_opt_toggle(br, BROPT_MULTICAST_ENABLED, false);
 		return ERR_PTR(-E2BIG);
 	}
@@ -1677,8 +1681,6 @@ static void br_multicast_update_querier(struct net_bridge_mcast *brmctx,
 					int ifindex,
 					struct br_ip *saddr)
 {
-	lockdep_assert_held_once(&brmctx->br->multicast_lock);
-
 	write_seqcount_begin(&querier->seq);
 	querier->port_ifidx = ifindex;
 	memcpy(&querier->addr, saddr, sizeof(*saddr));
@@ -3867,13 +3869,13 @@ void br_multicast_ctx_init(struct net_bridge *br,
 
 	brmctx->ip4_other_query.delay_time = 0;
 	brmctx->ip4_querier.port_ifidx = 0;
-	seqcount_init(&brmctx->ip4_querier.seq);
+	seqcount_spinlock_init(&brmctx->ip4_querier.seq, &br->multicast_lock);
 	brmctx->multicast_igmp_version = 2;
 #if IS_ENABLED(CONFIG_IPV6)
 	brmctx->multicast_mld_version = 1;
 	brmctx->ip6_other_query.delay_time = 0;
 	brmctx->ip6_querier.port_ifidx = 0;
-	seqcount_init(&brmctx->ip6_querier.seq);
+	seqcount_spinlock_init(&brmctx->ip6_querier.seq, &br->multicast_lock);
 #endif
 
 	timer_setup(&brmctx->ip4_mc_router_timer,
@@ -4523,6 +4525,38 @@ int br_multicast_set_mld_version(struct net_bridge_mcast *brmctx,
 	return 0;
 }
 #endif
+
+void br_multicast_set_query_intvl(struct net_bridge_mcast *brmctx,
+				  unsigned long val)
+{
+	unsigned long intvl_jiffies = clock_t_to_jiffies(val);
+
+	if (intvl_jiffies < BR_MULTICAST_QUERY_INTVL_MIN) {
+		br_info(brmctx->br,
+			"trying to set multicast query interval below minimum, setting to %lu (%ums)\n",
+			jiffies_to_clock_t(BR_MULTICAST_QUERY_INTVL_MIN),
+			jiffies_to_msecs(BR_MULTICAST_QUERY_INTVL_MIN));
+		intvl_jiffies = BR_MULTICAST_QUERY_INTVL_MIN;
+	}
+
+	brmctx->multicast_query_interval = intvl_jiffies;
+}
+
+void br_multicast_set_startup_query_intvl(struct net_bridge_mcast *brmctx,
+					  unsigned long val)
+{
+	unsigned long intvl_jiffies = clock_t_to_jiffies(val);
+
+	if (intvl_jiffies < BR_MULTICAST_STARTUP_QUERY_INTVL_MIN) {
+		br_info(brmctx->br,
+			"trying to set multicast startup query interval below minimum, setting to %lu (%ums)\n",
+			jiffies_to_clock_t(BR_MULTICAST_STARTUP_QUERY_INTVL_MIN),
+			jiffies_to_msecs(BR_MULTICAST_STARTUP_QUERY_INTVL_MIN));
+		intvl_jiffies = BR_MULTICAST_STARTUP_QUERY_INTVL_MIN;
+	}
+
+	brmctx->multicast_startup_query_interval = intvl_jiffies;
+}
 
 /**
  * br_multicast_list_adjacent - Returns snooped multicast addresses

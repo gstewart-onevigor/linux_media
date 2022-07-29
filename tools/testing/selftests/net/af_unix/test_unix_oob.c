@@ -218,10 +218,10 @@ main(int argc, char **argv)
 
 	/* Test 1:
 	 * veriyf that SIGURG is
-	 * delivered and 63 bytes are
-	 * read and oob is '@'
+	 * delivered, 63 bytes are
+	 * read, oob is '@', and POLLPRI works.
 	 */
-	wait_for_data(pfd, POLLIN | POLLPRI);
+	wait_for_data(pfd, POLLPRI);
 	read_oob(pfd, &oob);
 	len = read_data(pfd, buf, 1024);
 	if (!signal_recvd || len != 63 || oob != '@') {
@@ -271,8 +271,9 @@ main(int argc, char **argv)
 	read_oob(pfd, &oob);
 
 	if (!signal_recvd || len != 127 || oob != '%' || atmark != 1) {
-		fprintf(stderr, "Test 3 failed, sigurg %d len %d OOB %c ",
-		"atmark %d\n", signal_recvd, len, oob, atmark);
+		fprintf(stderr,
+			"Test 3 failed, sigurg %d len %d OOB %c atmark %d\n",
+			signal_recvd, len, oob, atmark);
 		die(1);
 	}
 

@@ -9,6 +9,8 @@
 
 #include "m88rs6060_priv.h"
 
+#define HWTUNE
+
 static u16 mes_log10[] = {
 	0, 3010, 4771, 6021, 6990, 7781, 8451, 9031, 9542, 10000,
 	10414, 10792, 11139, 11461, 11761, 12041, 12304, 12553, 12788, 13010,
@@ -457,7 +459,7 @@ static u32 pll_calc(u32 freq, struct Si5351RegSet *reg, int correction)
 	denom = 1000L * 1000L;
 	lltmp = freq % ref_freq;
 	lltmp *= denom;
-	do_div1(lltmp, ref_freq);
+	do_div(lltmp, ref_freq);
 	rfrac = (u32)lltmp;
 
 	b = 0;
@@ -476,7 +478,7 @@ static u32 pll_calc(u32 freq, struct Si5351RegSet *reg, int correction)
 	/* recalculate rate by fIN * (a + b/c) */
 	lltmp  = ref_freq;
 	lltmp *= b;
-	do_div1(lltmp, c);
+	do_div(lltmp, c);
 
 	freq  = (u32)lltmp;
 	freq += ref_freq * a;
@@ -651,7 +653,7 @@ static u32 multisynth_calc(u32 freq, struct Si5351RegSet *reg)
 	if (divby4 == 0)
 	{
 		lltmp = SI5351_PLL_VCO_MAX;
-		do_div1(lltmp, freq);
+		do_div(lltmp, freq);
 		a = (u32)lltmp;
 	}
 	else
@@ -664,7 +666,7 @@ static u32 multisynth_calc(u32 freq, struct Si5351RegSet *reg)
 	/* Recalculate output frequency by fOUT = fIN / (a + b/c) */
 	lltmp  = pll_freq;
 	lltmp *= c;
-	do_div1(lltmp, a * c + b);
+	do_div(lltmp, a * c + b);
 	freq  = (unsigned long)lltmp;
 
 	/* Calculate parameters */
@@ -721,7 +723,7 @@ static u32 multisynth_recalc(u32 freq, u32 pll_freq, struct Si5351RegSet *reg)
 	denom = 1000L * 1000L;
 	lltmp = pll_freq % freq;
 	lltmp *= denom;
-	do_div1(lltmp, freq);
+	do_div(lltmp, freq);
 	rfrac = (u32)lltmp;
 
 	b = 0;
@@ -733,7 +735,7 @@ static u32 multisynth_recalc(u32 freq, u32 pll_freq, struct Si5351RegSet *reg)
 	/* Recalculate output frequency by fOUT = fIN / (a + b/c) */
 	lltmp  = pll_freq;
 	lltmp *= c;
-	do_div1(lltmp, a * c + b);
+	do_div(lltmp, a * c + b);
 	freq  = (unsigned long)lltmp;
 
 	/* Calculate parameters */
@@ -1855,7 +1857,6 @@ static void m88res6060_set_ts_mode(struct m88rs6060_dev *dev)
 		tmp &= ~0x20;
 	}
 	tmp |= 0x1;
-	printk("tmp = 0x%x \n",tmp);
 	regmap_write(dev->regmap, 0x0b, tmp);
 	regmap_read(dev->regmap, 0x0c, &tmp);
 	regmap_write(dev->regmap, 0xf4, 0x01);
@@ -2084,13 +2085,13 @@ static int m88rs6060_set_frontend(struct dvb_frontend *fe)
 	rs6060_set_reg(dev, 0x5c, 0xf4);
 	rs6060_set_reg(dev, 0x60, 0xcb);
 
-	for (i = 0; i < 50; i++) {
+	for (i = 0; i < 150; i++) {
 		regmap_read(dev->regmap, 0x8, &tmp);
 		regmap_read(dev->regmap, 0xd, &tmp1);
 
 		if ((tmp1 == 0x8f) || (tmp1 == 0xf7))
 			break;
-		msleep(2);
+		msleep(20);
 	}
 
 	if (tmp1 == 0x8f) {
@@ -2134,6 +2135,11 @@ static int m88rs6060_set_frontend(struct dvb_frontend *fe)
  err:
 	dev_dbg(&client->dev, "failed = %d", ret);
 	return ret;
+}
+
+static enum dvbfe_algo m88rs6060_get_algo(struct dvb_frontend *fe)
+{
+	return DVBFE_ALGO_HW;
 }
 
 static int m88rs6060_init(struct dvb_frontend *fe)
@@ -2339,8 +2345,10 @@ static int rs6060_select_xm(struct m88rs6060_dev*dev,u32 *xm_KHz)
 
 	return 0;
 }
-static int m88rs6060_set_clock_ratio(struct m88rs6060_dev*dev )
+
+static int m88rs6060_set_clock_ratio(struct m88rs6060_dev *dev )
 {
+	struct i2c_client *client = dev->demod_client;
 	unsigned mod_fac,tmp1,tmp2,val;
 	u32 input_datarate,locked_sym_rate_KSs;
 	u32 Mclk_KHz = 96000,iSerialMclkHz;
@@ -2447,7 +2455,7 @@ static int m88rs6060_set_clock_ratio(struct m88rs6060_dev*dev )
 				divid_ratio = (u16) (Mclk_KHz/input_datarate);
 			else
 				divid_ratio = 0xff;
-			printk("MClk_KHz = %d,divid_ratio = %d \n",Mclk_KHz,divid_ratio);
+			dev_dbg(&client->dev, "MClk_KHz = %d,divid_ratio = %d \n", Mclk_KHz, divid_ratio);
 
 			if(divid_ratio<8)
 				divid_ratio = 8;
@@ -3089,6 +3097,30 @@ static int m88rs6060_diseqc_send_burst(struct dvb_frontend *fe,
 	return ret;
 }
 
+static int m88rs6060_tune(struct dvb_frontend *fe, bool re_tune,
+		unsigned int mode_flags,
+		unsigned int *delay, enum fe_status *status)
+{
+	//struct mxl *state = fe->demodulator_priv;
+	int r = 0;
+
+	*delay = HZ / 2;
+	if (re_tune) {
+		r = m88rs6060_set_frontend(fe);
+		if (r)
+			return r;
+	}
+
+	r = m88rs6060_read_status(fe, status);
+	if (r)
+		return r;
+
+	if (*status & FE_HAS_LOCK)
+		return 0;
+
+	return 0;
+}
+
 static void m88rs6060_spi_read(struct dvb_frontend *fe,
 			       struct ecp3_info *ecp3inf)
 {
@@ -3114,6 +3146,28 @@ static void m88rs6060_spi_write(struct dvb_frontend *fe,
 	return;
 }
 
+static void m88rs6060_eeprom_read(struct dvb_frontend *fe, struct eeprom_info *eepinf)
+{
+	struct m88rs6060_dev *dev = fe->demodulator_priv;
+	struct i2c_client *client = dev->demod_client;
+
+	if (dev->read_eeprom)
+		dev->read_eeprom(client->adapter, eepinf->reg,
+				      &(eepinf->data));
+	return ;
+}
+
+static void m88rs6060_eeprom_write(struct dvb_frontend *fe,struct eeprom_info *eepinf)
+{
+	struct m88rs6060_dev *dev = fe->demodulator_priv;
+	struct i2c_client *client = dev->demod_client;
+
+	if (dev->write_eeprom)
+		dev->write_eeprom(client->adapter, eepinf->reg,
+				      eepinf->data);
+	return ;
+}
+
 static const struct dvb_frontend_ops m88rs6060_ops = {
 	.delsys = {SYS_DVBS, SYS_DVBS2},
 	.info = {
@@ -3131,7 +3185,12 @@ static const struct dvb_frontend_ops m88rs6060_ops = {
 	},
 
 	.init = m88rs6060_init,
+#ifdef HWTUNE
+	.get_frontend_algo = m88rs6060_get_algo,
+	.tune = m88rs6060_tune,
+	#else
 	.set_frontend = m88rs6060_set_frontend,
+#endif
 
 	.read_status = m88rs6060_read_status,
 	.read_ber = m88rs6060_read_ber,
@@ -3143,6 +3202,8 @@ static const struct dvb_frontend_ops m88rs6060_ops = {
 	.diseqc_send_master_cmd = m88rs6060_diseqc_send_master_cmd,
 	.spi_read = m88rs6060_spi_read,
 	.spi_write = m88rs6060_spi_write,
+	.eeprom_read = m88rs6060_eeprom_read,
+	.eeprom_write = m88rs6060_eeprom_write,
 
 };
 static int m88rs6060_ready(struct m88rs6060_dev *dev)
@@ -3262,6 +3323,8 @@ static int m88rs6060_probe(struct i2c_client *client,
 	dev->config.repeater_value = cfg->repeater_value;
 	dev->config.read_properties = cfg->read_properties;
 	dev->config.write_properties = cfg->write_properties;
+	dev->config.read_eeprom = cfg->read_eeprom;
+	dev->config.write_eeprom = cfg->write_eeprom;
 	dev->config.envelope_mode = cfg->envelope_mode;
 	dev->demod_client = client;
 	dev->TsClockChecked = false;
@@ -3304,6 +3367,8 @@ static int m88rs6060_probe(struct i2c_client *client,
 	dev->fe_status = 0;
 	dev->write_properties = cfg->write_properties;
 	dev->read_properties = cfg->read_properties;
+	dev->write_eeprom = cfg->write_eeprom;
+	dev->read_eeprom = cfg->read_eeprom;
 
 	dev->fe.demodulator_priv = dev;
 	i2c_set_clientdata(client, dev);
