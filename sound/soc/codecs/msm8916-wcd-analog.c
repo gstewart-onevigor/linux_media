@@ -1128,7 +1128,6 @@ static const struct snd_soc_component_driver pm8916_wcd_analog = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static int pm8916_wcd_analog_parse_dt(struct device *dev,
@@ -1277,13 +1276,11 @@ err_disable_clk:
 	return ret;
 }
 
-static int pm8916_wcd_analog_spmi_remove(struct platform_device *pdev)
+static void pm8916_wcd_analog_spmi_remove(struct platform_device *pdev)
 {
 	struct pm8916_wcd_analog_priv *priv = dev_get_drvdata(&pdev->dev);
 
 	clk_disable_unprepare(priv->mclk);
-
-	return 0;
 }
 
 static const struct of_device_id pm8916_wcd_analog_spmi_match_table[] = {
@@ -1299,7 +1296,7 @@ static struct platform_driver pm8916_wcd_analog_spmi_driver = {
 		   .of_match_table = pm8916_wcd_analog_spmi_match_table,
 	},
 	.probe = pm8916_wcd_analog_spmi_probe,
-	.remove = pm8916_wcd_analog_spmi_remove,
+	.remove_new = pm8916_wcd_analog_spmi_remove,
 };
 
 module_platform_driver(pm8916_wcd_analog_spmi_driver);

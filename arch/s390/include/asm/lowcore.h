@@ -118,8 +118,8 @@ struct lowcore {
 	__u64	avg_steal_timer;		/* 0x0300 */
 	__u64	last_update_timer;		/* 0x0308 */
 	__u64	last_update_clock;		/* 0x0310 */
-	__u64	int_clock;			/* 0x0318*/
-	__u64	mcck_clock;			/* 0x0320 */
+	__u64	int_clock;			/* 0x0318 */
+	__u8	pad_0x0320[0x0328-0x0320];	/* 0x0320 */
 	__u64	clock_comparator;		/* 0x0328 */
 	__u64	boot_clock[2];			/* 0x0330 */
 
@@ -200,7 +200,12 @@ struct lowcore {
 	__u64	last_break_save_area;		/* 0x1338 */
 	__u32	access_regs_save_area[16];	/* 0x1340 */
 	__u64	cregs_save_area[16];		/* 0x1380 */
-	__u8	pad_0x1400[0x1800-0x1400];	/* 0x1400 */
+	__u8	pad_0x1400[0x1500-0x1400];	/* 0x1400 */
+	/* Cryptography-counter designation */
+	__u64	ccd;				/* 0x1500 */
+	/* AI-extension counter designation */
+	__u64	aicd;				/* 0x1508 */
+	__u8	pad_0x1510[0x1800-0x1510];	/* 0x1510 */
 
 	/* Transaction abort diagnostic block */
 	struct pgm_tdb pgm_tdb;			/* 0x1800 */

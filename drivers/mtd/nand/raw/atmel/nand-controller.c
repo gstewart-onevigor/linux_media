@@ -405,6 +405,7 @@ static int atmel_nand_dma_transfer(struct atmel_nand_controller *nc,
 
 	dma_async_issue_pending(nc->dmac);
 	wait_for_completion(&finished);
+	dma_unmap_single(nc->dev, buf_dma, len, dir);
 
 	return 0;
 
@@ -2625,11 +2626,11 @@ static int atmel_nand_controller_probe(struct platform_device *pdev)
 	return caps->ops->probe(pdev, caps);
 }
 
-static int atmel_nand_controller_remove(struct platform_device *pdev)
+static void atmel_nand_controller_remove(struct platform_device *pdev)
 {
 	struct atmel_nand_controller *nc = platform_get_drvdata(pdev);
 
-	return nc->caps->ops->remove(nc);
+	WARN_ON(nc->caps->ops->remove(nc));
 }
 
 static __maybe_unused int atmel_nand_controller_resume(struct device *dev)
@@ -2660,7 +2661,7 @@ static struct platform_driver atmel_nand_controller_driver = {
 		.pm = &atmel_nand_controller_pm_ops,
 	},
 	.probe = atmel_nand_controller_probe,
-	.remove = atmel_nand_controller_remove,
+	.remove_new = atmel_nand_controller_remove,
 };
 module_platform_driver(atmel_nand_controller_driver);
 

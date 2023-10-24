@@ -37,7 +37,7 @@ properties:
       for "samsung,s3c2440-hdmiphy-i2c" whose input/output lines are
       permanently wired to the respective client.
       This property is deprecated. Use "pinctrl-0" and "pinctrl-names" instead.
-    deprecated: yes
+    deprecated: true
 
   interrupts:
     maxItems: 1
@@ -123,7 +123,7 @@ examples:
         samsung,i2c-slave-addr = <0x66>;
 
         eeprom@50 {
-            compatible = "samsung,s524ad0xd1";
+            compatible = "samsung,s524ad0xd1", "atmel,24c128";
             reg = <0x50>;
         };
     };

@@ -84,8 +84,9 @@ h2_destroy()
 
 router_rp1_200_create()
 {
-	ip link add name $rp1.200 up \
-		link $rp1 addrgenmode eui64 type vlan id 200
+	ip link add name $rp1.200 link $rp1 type vlan id 200
+	ip link set dev $rp1.200 addrgenmode eui64
+	ip link set dev $rp1.200 up
 	ip address add dev $rp1.200 192.0.2.2/28
 	ip address add dev $rp1.200 2001:db8:1::2/64
 	ip stats set dev $rp1.200 l3_stats on
@@ -162,14 +163,6 @@ ping_ipv6()
 	ping_test $h1.200 2001:db8:2::1 " IPv6"
 }
 
-get_l3_stat()
-{
-	local selector=$1; shift
-
-	ip -j stats show dev $rp1.200 group offload subgroup l3_stats |
-		  jq '.[0].stats64.'$selector
-}
-
 send_packets_rx_ipv4()
 {
 	# Send 21 packets instead of 20, because the first one might trap and go
@@ -208,11 +201,11 @@ ___test_stats()
 	local a
 	local b
 
-	a=$(get_l3_stat ${dir}.packets)
+	a=$(hw_stats_get l3_stats $rp1.200 ${dir} packets)
 	send_packets_${dir}_${prot}
 	"$@"
 	b=$(busywait "$TC_HIT_TIMEOUT" until_counter_is ">= $a + 20" \
-		       get_l3_stat ${dir}.packets)
+		       hw_stats_get l3_stats $rp1.200 ${dir} packets)
 	check_err $? "Traffic not reflected in the counter: $a -> $b"
 }
 
@@ -264,9 +257,11 @@ reapply_config()
 
 	router_rp1_200_destroy
 
-	ip link add name $rp1.200 link $rp1 addrgenmode none type vlan id 200
+	ip link add name $rp1.200 link $rp1 type vlan id 200
+	ip link set dev $rp1.200 addrgenmode none
 	ip stats set dev $rp1.200 l3_stats on
-	ip link set dev $rp1.200 up addrgenmode eui64
+	ip link set dev $rp1.200 addrgenmode eui64
+	ip link set dev $rp1.200 up
 	ip address add dev $rp1.200 192.0.2.2/28
 	ip address add dev $rp1.200 2001:db8:1::2/64
 }
@@ -281,11 +276,11 @@ __test_stats_report()
 
 	RET=0
 
-	a=$(get_l3_stat ${dir}.packets)
+	a=$(hw_stats_get l3_stats $rp1.200 ${dir} packets)
 	send_packets_${dir}_${prot}
 	ip address flush dev $rp1.200
 	b=$(busywait "$TC_HIT_TIMEOUT" until_counter_is ">= $a + 20" \
-		       get_l3_stat ${dir}.packets)
+		       hw_stats_get l3_stats $rp1.200 ${dir} packets)
 	check_err $? "Traffic not reflected in the counter: $a -> $b"
 	log_test "Test ${dir} packets: stats pushed on loss of L3"
 
@@ -327,6 +322,19 @@ trap cleanup EXIT
 setup_prepare
 setup_wait
 
-tests_run
+used=$(ip -j stats show dev $rp1.200 group offload subgroup hw_stats_info |
+	   jq '.[].info.l3_stats.used')
+kind=$(ip -j -d link show dev $rp1 |
+	   jq -r '.[].linkinfo.info_kind')
+if [[ $used != true ]]; then
+	if [[ $kind == veth ]]; then
+		log_test_skip "l3_stats not offloaded on veth interface"
+		EXIT_STATUS=$ksft_skip
+	else
+		RET=1 log_test "l3_stats not offloaded"
+	fi
+else
+	tests_run
+fi
 
 exit $EXIT_STATUS

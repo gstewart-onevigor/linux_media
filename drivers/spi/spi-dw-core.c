@@ -57,21 +57,17 @@ static const struct debugfs_reg32 dw_spi_dbgfs_regs[] = {
 	DW_SPI_DBGFS_REG("RX_SAMPLE_DLY", DW_SPI_RX_SAMPLE_DLY),
 };
 
-static int dw_spi_debugfs_init(struct dw_spi *dws)
+static void dw_spi_debugfs_init(struct dw_spi *dws)
 {
 	char name[32];
 
 	snprintf(name, 32, "dw_spi%d", dws->master->bus_num);
 	dws->debugfs = debugfs_create_dir(name, NULL);
-	if (!dws->debugfs)
-		return -ENOMEM;
 
 	dws->regset.regs = dw_spi_dbgfs_regs;
 	dws->regset.nregs = ARRAY_SIZE(dw_spi_dbgfs_regs);
 	dws->regset.base = dws->regs;
 	debugfs_create_regset32("registers", 0400, dws->debugfs, &dws->regset);
-
-	return 0;
 }
 
 static void dw_spi_debugfs_remove(struct dw_spi *dws)
@@ -80,9 +76,8 @@ static void dw_spi_debugfs_remove(struct dw_spi *dws)
 }
 
 #else
-static inline int dw_spi_debugfs_init(struct dw_spi *dws)
+static inline void dw_spi_debugfs_init(struct dw_spi *dws)
 {
-	return 0;
 }
 
 static inline void dw_spi_debugfs_remove(struct dw_spi *dws)
@@ -103,7 +98,7 @@ void dw_spi_set_cs(struct spi_device *spi, bool enable)
 	 * support active-high or active-low CS level.
 	 */
 	if (cs_high == enable)
-		dw_writel(dws, DW_SPI_SER, BIT(spi->chip_select));
+		dw_writel(dws, DW_SPI_SER, BIT(spi_get_chipselect(spi, 0)));
 	else
 		dw_writel(dws, DW_SPI_SER, 0);
 }
@@ -307,8 +302,9 @@ static u32 dw_spi_prepare_cr0(struct dw_spi *dws, struct spi_device *spi)
 		if (spi->mode & SPI_LOOP)
 			cr0 |= DW_HSSI_CTRLR0_SRL;
 
-		if (dws->caps & DW_SPI_CAP_KEEMBAY_MST)
-			cr0 |= DW_HSSI_CTRLR0_KEEMBAY_MST;
+		/* CTRLR0[31] MST */
+		if (dw_spi_ver_is_ge(dws, HSSI, 102A))
+			cr0 |= DW_HSSI_CTRLR0_MST;
 	}
 
 	return cr0;
@@ -365,7 +361,7 @@ static void dw_spi_irq_setup(struct dw_spi *dws)
 	 * will be adjusted at the final stage of the IRQ-based SPI transfer
 	 * execution so not to lose the leftover of the incoming data.
 	 */
-	level = min_t(u16, dws->fifo_len / 2, dws->tx_len);
+	level = min_t(unsigned int, dws->fifo_len / 2, dws->tx_len);
 	dw_writel(dws, DW_SPI_TXFTLR, level);
 	dw_writel(dws, DW_SPI_RXFTLR, level - 1);
 
@@ -425,7 +421,10 @@ static int dw_spi_transfer_one(struct spi_controller *master,
 	int ret;
 
 	dws->dma_mapped = 0;
-	dws->n_bytes = DIV_ROUND_UP(transfer->bits_per_word, BITS_PER_BYTE);
+	dws->n_bytes =
+		roundup_pow_of_two(DIV_ROUND_UP(transfer->bits_per_word,
+						BITS_PER_BYTE));
+
 	dws->tx = (void *)transfer->tx_buf;
 	dws->tx_len = transfer->len / dws->n_bytes;
 	dws->rx = transfer->rx_buf;
@@ -942,7 +941,9 @@ int dw_spi_add_host(struct device *dev, struct dw_spi *dws)
 
 	if (dws->dma_ops && dws->dma_ops->dma_init) {
 		ret = dws->dma_ops->dma_init(dev, dws);
-		if (ret) {
+		if (ret == -EPROBE_DEFER) {
+			goto err_free_irq;
+		} else if (ret) {
 			dev_warn(dev, "DMA init failed\n");
 		} else {
 			master->can_dma = dws->dma_ops->can_dma;
@@ -952,7 +953,7 @@ int dw_spi_add_host(struct device *dev, struct dw_spi *dws)
 
 	ret = spi_register_controller(master);
 	if (ret) {
-		dev_err(&master->dev, "problem registering spi master\n");
+		dev_err_probe(dev, ret, "problem registering spi master\n");
 		goto err_dma_exit;
 	}
 
@@ -963,6 +964,7 @@ err_dma_exit:
 	if (dws->dma_ops && dws->dma_ops->dma_exit)
 		dws->dma_ops->dma_exit(dws);
 	dw_spi_enable_chip(dws, 0);
+err_free_irq:
 	free_irq(dws->irq, master);
 err_free_master:
 	spi_controller_put(master);

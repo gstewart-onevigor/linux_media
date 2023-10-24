@@ -6,7 +6,7 @@
 #ifndef __INTEL_DP_LINK_TRAINING_H__
 #define __INTEL_DP_LINK_TRAINING_H__
 
-#include <drm/dp/drm_dp_helper.h>
+#include <drm/display/drm_dp_helper.h>
 
 struct intel_crtc_state;
 struct intel_dp;
@@ -39,4 +39,6 @@ static inline u8 intel_dp_training_pattern_symbol(u8 pattern)
 	return pattern & ~DP_LINK_SCRAMBLING_DISABLE;
 }
 
+void intel_dp_128b132b_sdp_crc16(struct intel_dp *intel_dp,
+				 const struct intel_crtc_state *crtc_state);
 #endif /* __INTEL_DP_LINK_TRAINING_H__ */

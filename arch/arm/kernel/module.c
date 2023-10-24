@@ -169,8 +169,7 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 
 			offset = __mem_to_opcode_arm(*(u32 *)loc);
 			offset = (offset & 0x00ffffff) << 2;
-			if (offset & 0x02000000)
-				offset -= 0x04000000;
+			offset = sign_extend32(offset, 25);
 
 			offset += sym->st_value - loc;
 
@@ -236,7 +235,7 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 		case R_ARM_MOVT_PREL:
 			offset = tmp = __mem_to_opcode_arm(*(u32 *)loc);
 			offset = ((offset & 0xf0000) >> 4) | (offset & 0xfff);
-			offset = (offset ^ 0x8000) - 0x8000;
+			offset = sign_extend32(offset, 15);
 
 			offset += sym->st_value;
 			if (ELF32_R_TYPE(rel->r_info) == R_ARM_MOVT_PREL ||
@@ -344,8 +343,7 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 				((~(j2 ^ sign) & 1) << 22) |
 				((upper & 0x03ff) << 12) |
 				((lower & 0x07ff) << 1);
-			if (offset & 0x01000000)
-				offset -= 0x02000000;
+			offset = sign_extend32(offset, 24);
 			offset += sym->st_value - loc;
 
 			/*
@@ -401,7 +399,7 @@ apply_relocate(Elf32_Shdr *sechdrs, const char *strtab, unsigned int symindex,
 			offset = ((upper & 0x000f) << 12) |
 				((upper & 0x0400) << 1) |
 				((lower & 0x7000) >> 4) | (lower & 0x00ff);
-			offset = (offset ^ 0x8000) - 0x8000;
+			offset = sign_extend32(offset, 15);
 			offset += sym->st_value;
 
 			if (ELF32_R_TYPE(rel->r_info) == R_ARM_THM_MOVT_PREL ||
@@ -459,46 +457,40 @@ int module_finalize(const Elf32_Ehdr *hdr, const Elf_Shdr *sechdrs,
 #ifdef CONFIG_ARM_UNWIND
 	const char *secstrs = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
 	const Elf_Shdr *sechdrs_end = sechdrs + hdr->e_shnum;
-	struct mod_unwind_map maps[ARM_SEC_MAX];
-	int i;
+	struct list_head *unwind_list = &mod->arch.unwind_list;
 
-	memset(maps, 0, sizeof(maps));
+	INIT_LIST_HEAD(unwind_list);
+	mod->arch.init_table = NULL;
 
 	for (s = sechdrs; s < sechdrs_end; s++) {
 		const char *secname = secstrs + s->sh_name;
+		const char *txtname;
+		const Elf_Shdr *txt_sec;
 
-		if (!(s->sh_flags & SHF_ALLOC))
+		if (!(s->sh_flags & SHF_ALLOC) ||
+		    s->sh_type != ELF_SECTION_UNWIND)
 			continue;
 
-		if (strcmp(".ARM.exidx.init.text", secname) == 0)
-			maps[ARM_SEC_INIT].unw_sec = s;
-		else if (strcmp(".ARM.exidx", secname) == 0)
-			maps[ARM_SEC_CORE].unw_sec = s;
-		else if (strcmp(".ARM.exidx.exit.text", secname) == 0)
-			maps[ARM_SEC_EXIT].unw_sec = s;
-		else if (strcmp(".ARM.exidx.text.unlikely", secname) == 0)
-			maps[ARM_SEC_UNLIKELY].unw_sec = s;
-		else if (strcmp(".ARM.exidx.text.hot", secname) == 0)
-			maps[ARM_SEC_HOT].unw_sec = s;
-		else if (strcmp(".init.text", secname) == 0)
-			maps[ARM_SEC_INIT].txt_sec = s;
-		else if (strcmp(".text", secname) == 0)
-			maps[ARM_SEC_CORE].txt_sec = s;
-		else if (strcmp(".exit.text", secname) == 0)
-			maps[ARM_SEC_EXIT].txt_sec = s;
-		else if (strcmp(".text.unlikely", secname) == 0)
-			maps[ARM_SEC_UNLIKELY].txt_sec = s;
-		else if (strcmp(".text.hot", secname) == 0)
-			maps[ARM_SEC_HOT].txt_sec = s;
-	}
+		if (!strcmp(".ARM.exidx", secname))
+			txtname = ".text";
+		else
+			txtname = secname + strlen(".ARM.exidx");
+		txt_sec = find_mod_section(hdr, sechdrs, txtname);
 
-	for (i = 0; i < ARM_SEC_MAX; i++)
-		if (maps[i].unw_sec && maps[i].txt_sec)
-			mod->arch.unwind[i] =
-				unwind_table_add(maps[i].unw_sec->sh_addr,
-					         maps[i].unw_sec->sh_size,
-					         maps[i].txt_sec->sh_addr,
-					         maps[i].txt_sec->sh_size);
+		if (txt_sec) {
+			struct unwind_table *table =
+				unwind_table_add(s->sh_addr,
+						s->sh_size,
+						txt_sec->sh_addr,
+						txt_sec->sh_size);
+
+			list_add(&table->mod_list, unwind_list);
+
+			/* save init table for module_arch_freeing_init */
+			if (strcmp(".ARM.exidx.init.text", secname) == 0)
+				mod->arch.init_table = table;
+		}
+	}
 #endif
 #ifdef CONFIG_ARM_PATCH_PHYS_VIRT
 	s = find_mod_section(hdr, sechdrs, ".pv_table");
@@ -519,19 +511,27 @@ void
 module_arch_cleanup(struct module *mod)
 {
 #ifdef CONFIG_ARM_UNWIND
-	int i;
+	struct unwind_table *tmp;
+	struct unwind_table *n;
 
-	for (i = 0; i < ARM_SEC_MAX; i++) {
-		unwind_table_del(mod->arch.unwind[i]);
-		mod->arch.unwind[i] = NULL;
+	list_for_each_entry_safe(tmp, n,
+			&mod->arch.unwind_list, mod_list) {
+		list_del(&tmp->mod_list);
+		unwind_table_del(tmp);
 	}
+	mod->arch.init_table = NULL;
 #endif
 }
 
 void __weak module_arch_freeing_init(struct module *mod)
 {
 #ifdef CONFIG_ARM_UNWIND
-	unwind_table_del(mod->arch.unwind[ARM_SEC_INIT]);
-	mod->arch.unwind[ARM_SEC_INIT] = NULL;
+	struct unwind_table *init = mod->arch.init_table;
+
+	if (init) {
+		mod->arch.init_table = NULL;
+		list_del(&init->mod_list);
+		unwind_table_del(init);
+	}
 #endif
 }

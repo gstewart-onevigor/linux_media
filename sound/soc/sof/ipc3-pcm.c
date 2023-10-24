@@ -8,7 +8,7 @@
 //
 
 #include <sound/pcm_params.h>
-#include "ipc3-ops.h"
+#include "ipc3-priv.h"
 #include "ops.h"
 #include "sof-priv.h"
 #include "sof-audio.h"
@@ -19,7 +19,6 @@ static int sof_ipc3_pcm_hw_free(struct snd_soc_component *component,
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(component);
 	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct sof_ipc_stream stream;
-	struct sof_ipc_reply reply;
 	struct snd_sof_pcm *spcm;
 
 	spcm = snd_sof_find_spcm_dai(component, rtd);
@@ -34,8 +33,7 @@ static int sof_ipc3_pcm_hw_free(struct snd_soc_component *component,
 	stream.comp_id = spcm->stream[substream->stream].comp_id;
 
 	/* send IPC to the DSP */
-	return sof_ipc_tx_message(sdev->ipc, stream.hdr.cmd, &stream,
-				  sizeof(stream), &reply, sizeof(reply));
+	return sof_ipc_tx_message_no_reply(sdev->ipc, &stream, sizeof(stream));
 }
 
 static int sof_ipc3_pcm_hw_params(struct snd_soc_component *component,
@@ -116,10 +114,13 @@ static int sof_ipc3_pcm_hw_params(struct snd_soc_component *component,
 			pcm.params.no_stream_position = 1;
 	}
 
+	if (platform_params->cont_update_posn)
+		pcm.params.cont_update_posn = 1;
+
 	dev_dbg(component->dev, "stream_tag %d", pcm.params.stream_tag);
 
 	/* send hw_params IPC to the DSP */
-	ret = sof_ipc_tx_message(sdev->ipc, pcm.hdr.cmd, &pcm, sizeof(pcm),
+	ret = sof_ipc_tx_message(sdev->ipc, &pcm, sizeof(pcm),
 				 &ipc_params_reply, sizeof(ipc_params_reply));
 	if (ret < 0) {
 		dev_err(component->dev, "HW params ipc failed for stream %d\n",
@@ -127,7 +128,8 @@ static int sof_ipc3_pcm_hw_params(struct snd_soc_component *component,
 		return ret;
 	}
 
-	ret = snd_sof_set_stream_data_offset(sdev, substream, ipc_params_reply.posn_offset);
+	ret = snd_sof_set_stream_data_offset(sdev, &spcm->stream[substream->stream],
+					     ipc_params_reply.posn_offset);
 	if (ret < 0) {
 		dev_err(component->dev, "%s: invalid stream data offset for PCM %d\n",
 			__func__, spcm->pcm.pcm_id);
@@ -143,7 +145,6 @@ static int sof_ipc3_pcm_trigger(struct snd_soc_component *component,
 	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(component);
 	struct sof_ipc_stream stream;
-	struct sof_ipc_reply reply;
 	struct snd_sof_pcm *spcm;
 
 	spcm = snd_sof_find_spcm_dai(component, rtd);
@@ -175,8 +176,7 @@ static int sof_ipc3_pcm_trigger(struct snd_soc_component *component,
 	}
 
 	/* send IPC to the DSP */
-	return sof_ipc_tx_message(sdev->ipc, stream.hdr.cmd, &stream,
-				  sizeof(stream), &reply, sizeof(reply));
+	return sof_ipc_tx_message_no_reply(sdev->ipc, &stream, sizeof(stream));
 }
 
 static void ssp_dai_config_pcm_params_match(struct snd_sof_dev *sdev, const char *link_name,
@@ -335,6 +335,7 @@ static int sof_ipc3_pcm_dai_link_fixup(struct snd_soc_pcm_runtime *rtd,
 			channels->min, channels->max);
 		break;
 	case SOF_DAI_AMD_SP:
+	case SOF_DAI_AMD_SP_VIRTUAL:
 		rate->min = private->dai_config->acpsp.fsync_rate;
 		rate->max = private->dai_config->acpsp.fsync_rate;
 		channels->min = private->dai_config->acpsp.tdm_slots;
@@ -345,11 +346,21 @@ static int sof_ipc3_pcm_dai_link_fixup(struct snd_soc_pcm_runtime *rtd,
 		dev_dbg(component->dev, "AMD_SP channels_min: %d channels_max: %d\n",
 			channels->min, channels->max);
 		break;
+	case SOF_DAI_AMD_HS:
+	case SOF_DAI_AMD_HS_VIRTUAL:
+		rate->min = private->dai_config->acphs.fsync_rate;
+		rate->max = private->dai_config->acphs.fsync_rate;
+		channels->min = private->dai_config->acphs.tdm_slots;
+		channels->max = private->dai_config->acphs.tdm_slots;
+
+		dev_dbg(component->dev,
+			"AMD_HS channel_max: %d rate_max: %d\n", channels->max, rate->max);
+		break;
 	case SOF_DAI_AMD_DMIC:
-		rate->min = private->dai_config->acpdmic.fsync_rate;
-		rate->max = private->dai_config->acpdmic.fsync_rate;
-		channels->min = private->dai_config->acpdmic.tdm_slots;
-		channels->max = private->dai_config->acpdmic.tdm_slots;
+		rate->min = private->dai_config->acpdmic.pdm_rate;
+		rate->max = private->dai_config->acpdmic.pdm_rate;
+		channels->min = private->dai_config->acpdmic.pdm_ch;
+		channels->max = private->dai_config->acpdmic.pdm_ch;
 
 		dev_dbg(component->dev,
 			"AMD_DMIC rate_min: %d rate_max: %d\n", rate->min, rate->max);
@@ -369,4 +380,5 @@ const struct sof_ipc_pcm_ops ipc3_pcm_ops = {
 	.hw_free = sof_ipc3_pcm_hw_free,
 	.trigger = sof_ipc3_pcm_trigger,
 	.dai_link_fixup = sof_ipc3_pcm_dai_link_fixup,
+	.reset_hw_params_during_stop = true,
 };

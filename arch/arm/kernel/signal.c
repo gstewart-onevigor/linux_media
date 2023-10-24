@@ -18,6 +18,7 @@
 #include <asm/traps.h>
 #include <asm/unistd.h>
 #include <asm/vfp.h>
+#include <asm/syscalls.h>
 
 #include "signal.h"
 
@@ -655,7 +656,7 @@ struct page *get_signal_page(void)
 		 PAGE_SIZE / sizeof(u32));
 
 	/* Give the signal return code some randomness */
-	offset = 0x200 + (get_random_int() & 0x7fc);
+	offset = 0x200 + (get_random_u16() & 0x7fc);
 	signal_return_offset = offset;
 
 	/* Copy signal return handlers into the page */
@@ -708,6 +709,7 @@ static_assert(offsetof(siginfo_t, si_upper)	== 0x18);
 static_assert(offsetof(siginfo_t, si_pkey)	== 0x14);
 static_assert(offsetof(siginfo_t, si_perf_data)	== 0x10);
 static_assert(offsetof(siginfo_t, si_perf_type)	== 0x14);
+static_assert(offsetof(siginfo_t, si_perf_flags) == 0x18);
 static_assert(offsetof(siginfo_t, si_band)	== 0x0c);
 static_assert(offsetof(siginfo_t, si_fd)	== 0x10);
 static_assert(offsetof(siginfo_t, si_call_addr)	== 0x0c);

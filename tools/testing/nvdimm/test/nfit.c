@@ -23,8 +23,6 @@
 #include "nfit_test.h"
 #include "../watermark.h"
 
-#include <asm/mce.h>
-
 /*
  * Generate an NFIT table to describe the following topology:
  *
@@ -1880,14 +1878,14 @@ static size_t sizeof_spa(struct acpi_nfit_system_address *spa)
 static int nfit_test0_alloc(struct nfit_test *t)
 {
 	struct acpi_nfit_system_address *spa = NULL;
+	struct acpi_nfit_flush_address *flush;
 	size_t nfit_size = sizeof_spa(spa) * NUM_SPA
 			+ sizeof(struct acpi_nfit_memory_map) * NUM_MEM
 			+ sizeof(struct acpi_nfit_control_region) * NUM_DCR
 			+ offsetof(struct acpi_nfit_control_region,
 					window_size) * NUM_DCR
 			+ sizeof(struct acpi_nfit_data_region) * NUM_BDW
-			+ (sizeof(struct acpi_nfit_flush_address)
-					+ sizeof(u64) * NUM_HINTS) * NUM_DCR
+			+ struct_size(flush, hint_address, NUM_HINTS) * NUM_DCR
 			+ sizeof(struct acpi_nfit_capabilities);
 	int i;
 
@@ -3242,11 +3240,6 @@ static int nfit_test_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int nfit_test_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
 static void nfit_test_release(struct device *dev)
 {
 	struct nfit_test *nfit_test = to_nfit_test(dev);
@@ -3261,7 +3254,6 @@ static const struct platform_device_id nfit_test_id[] = {
 
 static struct platform_driver nfit_test_driver = {
 	.probe = nfit_test_probe,
-	.remove = nfit_test_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
 	},
@@ -3284,7 +3276,7 @@ static __init int nfit_test_init(void)
 	if (!nfit_wq)
 		return -ENOMEM;
 
-	nfit_test_dimm = class_create(THIS_MODULE, "nfit_test_dimm");
+	nfit_test_dimm = class_create("nfit_test_dimm");
 	if (IS_ERR(nfit_test_dimm)) {
 		rc = PTR_ERR(nfit_test_dimm);
 		goto err_register;
@@ -3375,7 +3367,6 @@ static __exit void nfit_test_exit(void)
 {
 	int i;
 
-	flush_workqueue(nfit_wq);
 	destroy_workqueue(nfit_wq);
 	for (i = 0; i < NUM_NFITS; i++)
 		platform_device_unregister(&instances[i]->pdev);

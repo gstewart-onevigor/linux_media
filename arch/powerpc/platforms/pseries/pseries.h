@@ -38,6 +38,7 @@ static inline void smp_init_pseries(void) { }
 #endif
 
 extern void pseries_kexec_cpu_down(int crash_shutdown, int secondary);
+void pseries_machine_kexec(struct kimage *image);
 
 extern void pSeries_final_fixup(void);
 
@@ -119,6 +120,12 @@ void pseries_setup_security_mitigations(void);
 void pseries_lpar_read_hblkrm_characteristics(void);
 #else
 static inline void pseries_lpar_read_hblkrm_characteristics(void) { }
+#endif
+
+void pseries_rng_init(void);
+#ifdef CONFIG_SPAPR_TCE_IOMMU
+struct iommu_group *pSeries_pci_device_group(struct pci_controller *hose,
+					     struct pci_dev *pdev);
 #endif
 
 #endif /* _PSERIES_PSERIES_H */

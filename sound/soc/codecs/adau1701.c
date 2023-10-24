@@ -772,7 +772,6 @@ static const struct snd_soc_component_driver adau1701_component_drv = {
 	.set_sysclk		= adau1701_set_sysclk,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config adau1701_regmap = {
@@ -785,8 +784,7 @@ static const struct regmap_config adau1701_regmap = {
 	.reg_read		= adau1701_reg_read,
 };
 
-static int adau1701_i2c_probe(struct i2c_client *client,
-			      const struct i2c_device_id *id)
+static int adau1701_i2c_probe(struct i2c_client *client)
 {
 	struct adau1701 *adau1701;
 	struct device *dev = &client->dev;

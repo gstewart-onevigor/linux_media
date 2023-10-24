@@ -4,14 +4,18 @@
  */
 #include <linux/platform_device.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/completion.h>
 #include <linux/cpumask.h>
 #include <linux/export.h>
 #include <linux/dma-mapping.h>
+#include <linux/interconnect.h>
 #include <linux/module.h>
 #include <linux/types.h>
-#include <linux/qcom_scm.h>
+#include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/clk.h>
 #include <linux/reset-controller.h>
@@ -31,7 +35,13 @@ struct qcom_scm {
 	struct clk *core_clk;
 	struct clk *iface_clk;
 	struct clk *bus_clk;
+	struct icc_path *path;
+	struct completion waitq_comp;
 	struct reset_controller_dev reset;
+
+	/* control access to the interconnect path */
+	struct mutex scm_bw_lock;
+	int scm_vote_count;
 
 	u64 dload_mode_addr;
 };
@@ -56,6 +66,9 @@ static const u8 qcom_scm_cpu_cold_bits[QCOM_SCM_BOOT_MAX_CPUS] = {
 static const u8 qcom_scm_cpu_warm_bits[QCOM_SCM_BOOT_MAX_CPUS] = {
 	BIT(2), BIT(1), BIT(4), BIT(6)
 };
+
+#define QCOM_SMC_WAITQ_FLAG_WAKE_ONE	BIT(0)
+#define QCOM_SMC_WAITQ_FLAG_WAKE_ALL	BIT(1)
 
 static const char * const qcom_scm_convention_names[] = {
 	[SMC_CONVENTION_UNKNOWN] = "unknown",
@@ -97,6 +110,42 @@ static void qcom_scm_clk_disable(void)
 	clk_disable_unprepare(__scm->core_clk);
 	clk_disable_unprepare(__scm->iface_clk);
 	clk_disable_unprepare(__scm->bus_clk);
+}
+
+static int qcom_scm_bw_enable(void)
+{
+	int ret = 0;
+
+	if (!__scm->path)
+		return 0;
+
+	if (IS_ERR(__scm->path))
+		return -EINVAL;
+
+	mutex_lock(&__scm->scm_bw_lock);
+	if (!__scm->scm_vote_count) {
+		ret = icc_set_bw(__scm->path, 0, UINT_MAX);
+		if (ret < 0) {
+			dev_err(__scm->dev, "failed to set bandwidth request\n");
+			goto err_bw;
+		}
+	}
+	__scm->scm_vote_count++;
+err_bw:
+	mutex_unlock(&__scm->scm_bw_lock);
+
+	return ret;
+}
+
+static void qcom_scm_bw_disable(void)
+{
+	if (IS_ERR_OR_NULL(__scm->path))
+		return;
+
+	mutex_lock(&__scm->scm_bw_lock);
+	if (__scm->scm_vote_count-- == 1)
+		icc_set_bw(__scm->path, 0, 0);
+	mutex_unlock(&__scm->scm_bw_lock);
 }
 
 enum qcom_scm_convention qcom_scm_convention = SMC_CONVENTION_UNKNOWN;
@@ -444,10 +493,15 @@ int qcom_scm_pas_init_image(u32 peripheral, const void *metadata, size_t size,
 	if (ret)
 		goto out;
 
+	ret = qcom_scm_bw_enable();
+	if (ret)
+		return ret;
+
 	desc.args[1] = mdata_phys;
 
 	ret = qcom_scm_call(__scm->dev, &desc, &res);
 
+	qcom_scm_bw_disable();
 	qcom_scm_clk_disable();
 
 out:
@@ -507,7 +561,12 @@ int qcom_scm_pas_mem_setup(u32 peripheral, phys_addr_t addr, phys_addr_t size)
 	if (ret)
 		return ret;
 
+	ret = qcom_scm_bw_enable();
+	if (ret)
+		return ret;
+
 	ret = qcom_scm_call(__scm->dev, &desc, &res);
+	qcom_scm_bw_disable();
 	qcom_scm_clk_disable();
 
 	return ret ? : res.result[0];
@@ -537,7 +596,12 @@ int qcom_scm_pas_auth_and_reset(u32 peripheral)
 	if (ret)
 		return ret;
 
+	ret = qcom_scm_bw_enable();
+	if (ret)
+		return ret;
+
 	ret = qcom_scm_call(__scm->dev, &desc, &res);
+	qcom_scm_bw_disable();
 	qcom_scm_clk_disable();
 
 	return ret ? : res.result[0];
@@ -566,8 +630,13 @@ int qcom_scm_pas_shutdown(u32 peripheral)
 	if (ret)
 		return ret;
 
+	ret = qcom_scm_bw_enable();
+	if (ret)
+		return ret;
+
 	ret = qcom_scm_call(__scm->dev, &desc, &res);
 
+	qcom_scm_bw_disable();
 	qcom_scm_clk_disable();
 
 	return ret ? : res.result[0];
@@ -836,7 +905,7 @@ static int __qcom_scm_assign_mem(struct device *dev, phys_addr_t mem_region,
  * Return negative errno on failure or 0 on success with @srcvm updated.
  */
 int qcom_scm_assign_mem(phys_addr_t mem_addr, size_t mem_sz,
-			unsigned int *srcvm,
+			u64 *srcvm,
 			const struct qcom_scm_vmperm *newvm,
 			unsigned int dest_cnt)
 {
@@ -853,9 +922,9 @@ int qcom_scm_assign_mem(phys_addr_t mem_addr, size_t mem_sz,
 	__le32 *src;
 	void *ptr;
 	int ret, i, b;
-	unsigned long srcvm_bits = *srcvm;
+	u64 srcvm_bits = *srcvm;
 
-	src_sz = hweight_long(srcvm_bits) * sizeof(*src);
+	src_sz = hweight64(srcvm_bits) * sizeof(*src);
 	mem_to_map_sz = sizeof(*mem_to_map);
 	dest_sz = dest_cnt * sizeof(*destvm);
 	ptr_sz = ALIGN(src_sz, SZ_64) + ALIGN(mem_to_map_sz, SZ_64) +
@@ -868,8 +937,10 @@ int qcom_scm_assign_mem(phys_addr_t mem_addr, size_t mem_sz,
 	/* Fill source vmid detail */
 	src = ptr;
 	i = 0;
-	for_each_set_bit(b, &srcvm_bits, BITS_PER_LONG)
-		src[i++] = cpu_to_le32(b);
+	for (b = 0; b < BITS_PER_TYPE(u64); b++) {
+		if (srcvm_bits & BIT(b))
+			src[i++] = cpu_to_le32(b);
+	}
 
 	/* Fill details of mem buff to map */
 	mem_to_map = ptr + ALIGN(src_sz, SZ_64);
@@ -1263,11 +1334,79 @@ bool qcom_scm_is_available(void)
 }
 EXPORT_SYMBOL(qcom_scm_is_available);
 
+static int qcom_scm_assert_valid_wq_ctx(u32 wq_ctx)
+{
+	/* FW currently only supports a single wq_ctx (zero).
+	 * TODO: Update this logic to include dynamic allocation and lookup of
+	 * completion structs when FW supports more wq_ctx values.
+	 */
+	if (wq_ctx != 0) {
+		dev_err(__scm->dev, "Firmware unexpectedly passed non-zero wq_ctx\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int qcom_scm_wait_for_wq_completion(u32 wq_ctx)
+{
+	int ret;
+
+	ret = qcom_scm_assert_valid_wq_ctx(wq_ctx);
+	if (ret)
+		return ret;
+
+	wait_for_completion(&__scm->waitq_comp);
+
+	return 0;
+}
+
+static int qcom_scm_waitq_wakeup(struct qcom_scm *scm, unsigned int wq_ctx)
+{
+	int ret;
+
+	ret = qcom_scm_assert_valid_wq_ctx(wq_ctx);
+	if (ret)
+		return ret;
+
+	complete(&__scm->waitq_comp);
+
+	return 0;
+}
+
+static irqreturn_t qcom_scm_irq_handler(int irq, void *data)
+{
+	int ret;
+	struct qcom_scm *scm = data;
+	u32 wq_ctx, flags, more_pending = 0;
+
+	do {
+		ret = scm_get_wq_ctx(&wq_ctx, &flags, &more_pending);
+		if (ret) {
+			dev_err(scm->dev, "GET_WQ_CTX SMC call failed: %d\n", ret);
+			goto out;
+		}
+
+		if (flags != QCOM_SMC_WAITQ_FLAG_WAKE_ONE &&
+		    flags != QCOM_SMC_WAITQ_FLAG_WAKE_ALL) {
+			dev_err(scm->dev, "Invalid flags found for wq_ctx: %u\n", flags);
+			goto out;
+		}
+
+		ret = qcom_scm_waitq_wakeup(scm, wq_ctx);
+		if (ret)
+			goto out;
+	} while (more_pending);
+
+out:
+	return IRQ_HANDLED;
+}
+
 static int qcom_scm_probe(struct platform_device *pdev)
 {
 	struct qcom_scm *scm;
 	unsigned long clks;
-	int ret;
+	int irq, ret;
 
 	scm = devm_kzalloc(&pdev->dev, sizeof(*scm), GFP_KERNEL);
 	if (!scm)
@@ -1277,7 +1416,14 @@ static int qcom_scm_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
+	mutex_init(&scm->scm_bw_lock);
+
 	clks = (unsigned long)of_device_get_match_data(&pdev->dev);
+
+	scm->path = devm_of_icc_get(&pdev->dev, NULL);
+	if (IS_ERR(scm->path))
+		return dev_err_probe(&pdev->dev, PTR_ERR(scm->path),
+				     "failed to acquire interconnect path\n");
 
 	scm->core_clk = devm_clk_get(&pdev->dev, "core");
 	if (IS_ERR(scm->core_clk)) {
@@ -1333,11 +1479,24 @@ static int qcom_scm_probe(struct platform_device *pdev)
 	__scm = scm;
 	__scm->dev = &pdev->dev;
 
+	init_completion(&__scm->waitq_comp);
+
+	irq = platform_get_irq_optional(pdev, 0);
+	if (irq < 0) {
+		if (irq != -ENXIO)
+			return irq;
+	} else {
+		ret = devm_request_threaded_irq(__scm->dev, irq, NULL, qcom_scm_irq_handler,
+						IRQF_ONESHOT, "qcom-scm", __scm);
+		if (ret < 0)
+			return dev_err_probe(scm->dev, ret, "Failed to request qcom-scm irq\n");
+	}
+
 	__get_convention();
 
 	/*
 	 * If requested enable "download mode", from this point on warmboot
-	 * will cause the the boot stages to enter download mode, unless
+	 * will cause the boot stages to enter download mode, unless
 	 * disabled below by a clean shutdown/reboot.
 	 */
 	if (download_mode)
@@ -1349,8 +1508,7 @@ static int qcom_scm_probe(struct platform_device *pdev)
 static void qcom_scm_shutdown(struct platform_device *pdev)
 {
 	/* Clean shutdown, disable download mode to allow normal restart */
-	if (download_mode)
-		qcom_scm_set_download_mode(false);
+	qcom_scm_set_download_mode(false);
 }
 
 static const struct of_device_id qcom_scm_dt_match[] = {
@@ -1379,8 +1537,13 @@ static const struct of_device_id qcom_scm_dt_match[] = {
 							     SCM_HAS_IFACE_CLK |
 							     SCM_HAS_BUS_CLK)
 	},
+	{ .compatible = "qcom,scm-msm8976", .data = (void *)(SCM_HAS_CORE_CLK |
+							     SCM_HAS_IFACE_CLK |
+							     SCM_HAS_BUS_CLK)
+	},
 	{ .compatible = "qcom,scm-msm8994" },
 	{ .compatible = "qcom,scm-msm8996" },
+	{ .compatible = "qcom,scm-sm6375", .data = (void *)SCM_HAS_CORE_CLK },
 	{ .compatible = "qcom,scm" },
 	{}
 };

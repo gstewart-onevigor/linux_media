@@ -128,6 +128,10 @@
 
 #define SO_TXREHASH              0x0053
 
+#define SO_RCVMARK               0x0054
+
+#define SO_PASSPIDFD             0x0055
+#define SO_PEERPIDFD             0x0056
 
 #if !defined(__KERNEL__)
 

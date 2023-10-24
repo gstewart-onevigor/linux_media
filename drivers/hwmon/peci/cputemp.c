@@ -402,7 +402,7 @@ static int create_temp_label(struct peci_cputemp *priv)
 	unsigned long core_max = find_last_bit(priv->core_mask, CORE_NUMS_MAX);
 	int i;
 
-	priv->coretemp_label = devm_kzalloc(priv->dev, core_max * sizeof(char *), GFP_KERNEL);
+	priv->coretemp_label = devm_kzalloc(priv->dev, (core_max + 1) * sizeof(char *), GFP_KERNEL);
 	if (!priv->coretemp_label)
 		return -ENOMEM;
 
@@ -447,29 +447,23 @@ static const struct hwmon_ops peci_cputemp_ops = {
 	.read = cputemp_read,
 };
 
-static const u32 peci_cputemp_temp_channel_config[] = {
-	/* Die temperature */
-	HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_CRIT | HWMON_T_CRIT_HYST,
-	/* DTS margin */
-	HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_CRIT | HWMON_T_CRIT_HYST,
-	/* Tcontrol temperature */
-	HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_CRIT,
-	/* Tthrottle temperature */
-	HWMON_T_LABEL | HWMON_T_INPUT,
-	/* Tjmax temperature */
-	HWMON_T_LABEL | HWMON_T_INPUT,
-	/* Core temperature - for all core channels */
-	[channel_core ... CPUTEMP_CHANNEL_NUMS - 1] = HWMON_T_LABEL | HWMON_T_INPUT,
-	0
-};
-
-static const struct hwmon_channel_info peci_cputemp_temp_channel = {
-	.type = hwmon_temp,
-	.config = peci_cputemp_temp_channel_config,
-};
-
-static const struct hwmon_channel_info *peci_cputemp_info[] = {
-	&peci_cputemp_temp_channel,
+static const struct hwmon_channel_info * const peci_cputemp_info[] = {
+	HWMON_CHANNEL_INFO(temp,
+			   /* Die temperature */
+			   HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_MAX |
+			   HWMON_T_CRIT | HWMON_T_CRIT_HYST,
+			   /* DTS margin */
+			   HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_MAX |
+			   HWMON_T_CRIT | HWMON_T_CRIT_HYST,
+			   /* Tcontrol temperature */
+			   HWMON_T_LABEL | HWMON_T_INPUT | HWMON_T_CRIT,
+			   /* Tthrottle temperature */
+			   HWMON_T_LABEL | HWMON_T_INPUT,
+			   /* Tjmax temperature */
+			   HWMON_T_LABEL | HWMON_T_INPUT,
+			   /* Core temperature - for all core channels */
+			   [channel_core ... CPUTEMP_CHANNEL_NUMS - 1] =
+						HWMON_T_LABEL | HWMON_T_INPUT),
 	NULL
 };
 
@@ -543,6 +537,12 @@ static const struct cpu_info cpu_hsx = {
 	.thermal_margin_to_millidegree = &dts_eight_dot_eight_to_millidegree,
 };
 
+static const struct cpu_info cpu_skx = {
+	.reg		= &resolved_cores_reg_hsx,
+	.min_peci_revision = 0x33,
+	.thermal_margin_to_millidegree = &dts_ten_dot_six_to_millidegree,
+};
+
 static const struct cpu_info cpu_icx = {
 	.reg		= &resolved_cores_reg_icx,
 	.min_peci_revision = 0x40,
@@ -564,7 +564,7 @@ static const struct auxiliary_device_id peci_cputemp_ids[] = {
 	},
 	{
 		.name = "peci_cpu.cputemp.skx",
-		.driver_data = (kernel_ulong_t)&cpu_hsx,
+		.driver_data = (kernel_ulong_t)&cpu_skx,
 	},
 	{
 		.name = "peci_cpu.cputemp.icx",

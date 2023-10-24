@@ -3,11 +3,15 @@
  * Copyright (C) 2021 Rafał Miłecki <rafal@milecki.pl>
  */
 
+#include <linux/bcm47xx_nvram.h>
+#include <linux/etherdevice.h>
+#include <linux/if_ether.h>
 #include <linux/io.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/nvmem-provider.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -36,6 +40,25 @@ static int brcm_nvram_read(void *context, unsigned int offset, void *val,
 
 	while (bytes--)
 		*dst++ = readb(priv->base + offset++);
+
+	return 0;
+}
+
+static int brcm_nvram_read_post_process_macaddr(void *context, const char *id, int index,
+						unsigned int offset, void *buf, size_t bytes)
+{
+	u8 mac[ETH_ALEN];
+
+	if (bytes != 3 * ETH_ALEN - 1)
+		return -EINVAL;
+
+	if (!mac_pton(buf, mac))
+		return -EINVAL;
+
+	if (index)
+		eth_addr_add(mac, index);
+
+	ether_addr_copy(buf, mac);
 
 	return 0;
 }
@@ -72,6 +95,14 @@ static int brcm_nvram_add_cells(struct brcm_nvram *priv, uint8_t *data,
 			return -ENOMEM;
 		priv->cells[idx].offset = value - (char *)data;
 		priv->cells[idx].bytes = strlen(value);
+		priv->cells[idx].np = of_get_child_by_name(dev->of_node, priv->cells[idx].name);
+		if (!strcmp(var, "et0macaddr") ||
+		    !strcmp(var, "et1macaddr") ||
+		    !strcmp(var, "et2macaddr")) {
+			priv->cells[idx].raw_len = strlen(value);
+			priv->cells[idx].bytes = ETH_ALEN;
+			priv->cells[idx].read_post_process = brcm_nvram_read_post_process_macaddr;
+		}
 	}
 
 	return 0;
@@ -94,7 +125,10 @@ static int brcm_nvram_parse(struct brcm_nvram *priv)
 
 	len = le32_to_cpu(header.len);
 
-	data = kcalloc(1, len, GFP_KERNEL);
+	data = kzalloc(len, GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
 	memcpy_fromio(data, priv->base, len);
 	data[len - 1] = '\0';
 
@@ -133,6 +167,8 @@ static int brcm_nvram_probe(struct platform_device *pdev)
 	err = brcm_nvram_parse(priv);
 	if (err)
 		return err;
+
+	bcm47xx_nvram_init_from_iomem(priv->base, resource_size(res));
 
 	config.dev = dev;
 	config.cells = priv->cells;

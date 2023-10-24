@@ -24,7 +24,6 @@
 #include <asm/spu_priv1.h>
 #include <asm/spu_csa.h>
 #include <asm/xmon.h>
-#include <asm/prom.h>
 #include <asm/kexec.h>
 
 const struct spu_management_ops *spu_management_ops;
@@ -326,12 +325,6 @@ spu_irq_class_1(int irq, void *data)
 
 	if (stat & CLASS1_STORAGE_FAULT_INTR)
 		__spu_trap_data_map(spu, dar, dsisr);
-
-	if (stat & CLASS1_LS_COMPARE_SUSPEND_ON_GET_INTR)
-		;
-
-	if (stat & CLASS1_LS_COMPARE_SUSPEND_ON_PUT_INTR)
-		;
 
 	spu->class_1_dsisr = 0;
 	spu->class_1_dar = 0;

@@ -61,6 +61,7 @@ struct amdgpu_nbio_funcs {
 	u32 (*get_hdp_flush_done_offset)(struct amdgpu_device *adev);
 	u32 (*get_pcie_index_offset)(struct amdgpu_device *adev);
 	u32 (*get_pcie_data_offset)(struct amdgpu_device *adev);
+	u32 (*get_pcie_index_hi_offset)(struct amdgpu_device *adev);
 	u32 (*get_pcie_port_index_offset)(struct amdgpu_device *adev);
 	u32 (*get_pcie_port_data_offset)(struct amdgpu_device *adev);
 	u32 (*get_rev_id)(struct amdgpu_device *adev);
@@ -70,6 +71,7 @@ struct amdgpu_nbio_funcs {
 			bool use_doorbell, int doorbell_index, int doorbell_size);
 	void (*vcn_doorbell_range)(struct amdgpu_device *adev, bool use_doorbell,
 				   int doorbell_index, int instance);
+	void (*gc_doorbell_init)(struct amdgpu_device *adev);
 	void (*enable_doorbell_aperture)(struct amdgpu_device *adev,
 					 bool enable);
 	void (*enable_doorbell_selfring_aperture)(struct amdgpu_device *adev,
@@ -83,7 +85,7 @@ struct amdgpu_nbio_funcs {
 	void (*update_medium_grain_light_sleep)(struct amdgpu_device *adev,
 						bool enable);
 	void (*get_clockgating_state)(struct amdgpu_device *adev,
-				      u32 *flags);
+				      u64 *flags);
 	void (*ih_control)(struct amdgpu_device *adev);
 	void (*init_registers)(struct amdgpu_device *adev);
 	void (*remap_hdp_registers)(struct amdgpu_device *adev);
@@ -93,6 +95,10 @@ struct amdgpu_nbio_funcs {
 	void (*apply_lc_spc_mode_wa)(struct amdgpu_device *adev);
 	void (*apply_l1_link_width_reconfig_wa)(struct amdgpu_device *adev);
 	void (*clear_doorbell_interrupt)(struct amdgpu_device *adev);
+	u32 (*get_rom_offset)(struct amdgpu_device *adev);
+	int (*get_compute_partition_mode)(struct amdgpu_device *adev);
+	u32 (*get_memory_partition_mode)(struct amdgpu_device *adev,
+					 u32 *supp_modes);
 };
 
 struct amdgpu_nbio {
@@ -104,5 +110,6 @@ struct amdgpu_nbio {
 	struct amdgpu_nbio_ras  *ras;
 };
 
+int amdgpu_nbio_ras_sw_init(struct amdgpu_device *adev);
 int amdgpu_nbio_ras_late_init(struct amdgpu_device *adev, struct ras_common_if *ras_block);
 #endif

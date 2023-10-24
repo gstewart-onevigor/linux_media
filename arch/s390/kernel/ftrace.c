@@ -49,26 +49,6 @@ struct ftrace_insn {
 	s32 disp;
 } __packed;
 
-asm(
-	"	.align 16\n"
-	"ftrace_shared_hotpatch_trampoline_br:\n"
-	"	lmg	%r0,%r1,2(%r1)\n"
-	"	br	%r1\n"
-	"ftrace_shared_hotpatch_trampoline_br_end:\n"
-);
-
-#ifdef CONFIG_EXPOLINE
-asm(
-	"	.align 16\n"
-	"ftrace_shared_hotpatch_trampoline_exrl:\n"
-	"	lmg	%r0,%r1,2(%r1)\n"
-	"	exrl	%r0,0f\n"
-	"	j	.\n"
-	"0:	br	%r1\n"
-	"ftrace_shared_hotpatch_trampoline_exrl_end:\n"
-);
-#endif /* CONFIG_EXPOLINE */
-
 #ifdef CONFIG_MODULES
 static char *ftrace_plt;
 #endif /* CONFIG_MODULES */
@@ -225,14 +205,13 @@ void arch_ftrace_update_code(int command)
 	ftrace_modify_all_code(command);
 }
 
-int ftrace_arch_code_modify_post_process(void)
+void ftrace_arch_code_modify_post_process(void)
 {
 	/*
 	 * Flush any pre-fetched instructions on all
 	 * CPUs to make the new code visible.
 	 */
 	text_poke_sync_lock();
-	return 0;
 }
 
 #ifdef CONFIG_MODULES
@@ -247,7 +226,7 @@ static int __init ftrace_plt_init(void)
 
 	start = ftrace_shared_hotpatch_trampoline(&end);
 	memcpy(ftrace_plt, start, end - start);
-	set_memory_ro((unsigned long)ftrace_plt, 1);
+	set_memory_rox((unsigned long)ftrace_plt, 1);
 	return 0;
 }
 device_initcall(ftrace_plt_init);

@@ -85,7 +85,7 @@ extern struct auxiliary_driver i40iw_auxiliary_drv;
 #define	IRDMA_NO_QSET	0xffff
 
 #define IW_CFG_FPM_QP_COUNT		32768
-#define IRDMA_MAX_PAGES_PER_FMR		512
+#define IRDMA_MAX_PAGES_PER_FMR		262144
 #define IRDMA_MIN_PAGES_PER_FMR		1
 #define IRDMA_CQP_COMPL_RQ_WQE_FLUSHED	2
 #define IRDMA_CQP_COMPL_SQ_WQE_FLUSHED	3
@@ -114,6 +114,8 @@ extern struct auxiliary_driver i40iw_auxiliary_drv;
 #define IRDMA_FLUSH_RQ		BIT(1)
 #define IRDMA_REFLUSH		BIT(2)
 #define IRDMA_FLUSH_WAIT	BIT(3)
+
+#define IRDMA_IRQ_NAME_STR_LEN (64)
 
 enum init_completion_state {
 	INVALID_STATE = 0,
@@ -212,6 +214,7 @@ struct irdma_msix_vector {
 	u32 cpu_affinity;
 	u32 ceq_id;
 	cpumask_t mask;
+	char name[IRDMA_IRQ_NAME_STR_LEN];
 };
 
 struct irdma_mc_table_info {
@@ -338,7 +341,6 @@ struct irdma_device {
 	u32 roce_ackcreds;
 	u32 vendor_id;
 	u32 vendor_part_id;
-	u32 device_cap_flags;
 	u32 push_mode;
 	u32 rcv_wnd;
 	u16 mac_ip_table_idx;

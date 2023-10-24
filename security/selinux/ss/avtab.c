@@ -40,15 +40,15 @@ static inline int avtab_hash(const struct avtab_key *keyp, u32 mask)
 
 	u32 hash = 0;
 
-#define mix(input) { \
-	u32 v = input; \
-	v *= c1; \
-	v = (v << r1) | (v >> (32 - r1)); \
-	v *= c2; \
-	hash ^= v; \
-	hash = (hash << r2) | (hash >> (32 - r2)); \
-	hash = hash * m + n; \
-}
+#define mix(input) do { \
+		u32 v = input; \
+		v *= c1; \
+		v = (v << r1) | (v >> (32 - r1)); \
+		v *= c2; \
+		hash ^= v; \
+		hash = (hash << r2) | (hash >> (32 - r2)); \
+		hash = hash * m + n; \
+	} while (0)
 
 	mix(keyp->target_class);
 	mix(keyp->target_type);
@@ -354,7 +354,7 @@ int avtab_alloc_dup(struct avtab *new, const struct avtab *orig)
 	return avtab_alloc_common(new, orig->nslot);
 }
 
-void avtab_hash_eval(struct avtab *h, char *tag)
+void avtab_hash_eval(struct avtab *h, const char *tag)
 {
 	int i, chain_len, slots_used, max_chain_len;
 	unsigned long long chain2_len_sum;
@@ -385,7 +385,7 @@ void avtab_hash_eval(struct avtab *h, char *tag)
 	       chain2_len_sum);
 }
 
-static uint16_t spec_order[] = {
+static const uint16_t spec_order[] = {
 	AVTAB_ALLOWED,
 	AVTAB_AUDITDENY,
 	AVTAB_AUDITALLOW,

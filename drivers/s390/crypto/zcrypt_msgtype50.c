@@ -158,7 +158,6 @@ struct type80_hdr {
 
 int get_rsa_modex_fc(struct ica_rsa_modexpo *mex, int *fcode)
 {
-
 	if (!mex->inputdatalength)
 		return -EINVAL;
 
@@ -174,7 +173,6 @@ int get_rsa_modex_fc(struct ica_rsa_modexpo *mex, int *fcode)
 
 int get_rsa_crt_fc(struct ica_rsa_modexpo_crt *crt, int *fcode)
 {
-
 	if (!crt->inputdatalength)
 		return -EINVAL;
 
@@ -239,18 +237,14 @@ static int ICAMEX_msg_to_type50MEX_msg(struct zcrypt_queue *zq,
 		mod = meb3->modulus + sizeof(meb3->modulus) - mod_len;
 		exp = meb3->exponent + sizeof(meb3->exponent) - mod_len;
 		inp = meb3->message + sizeof(meb3->message) - mod_len;
-	} else
+	} else {
 		return -EINVAL;
+	}
 
 	if (copy_from_user(mod, mex->n_modulus, mod_len) ||
 	    copy_from_user(exp, mex->b_key, mod_len) ||
 	    copy_from_user(inp, mex->inputdata, mod_len))
 		return -EFAULT;
-
-#ifdef CONFIG_ZCRYPT_DEBUG
-	if (ap_msg->fi.flags & AP_FI_FLAG_TOGGLE_SPECIAL)
-		ap_msg->flags ^= AP_MSG_FLAG_SPECIAL;
-#endif
 
 	return 0;
 }
@@ -323,8 +317,9 @@ static int ICACRT_msg_to_type50CRT_msg(struct zcrypt_queue *zq,
 		dq = crb3->dq + sizeof(crb3->dq) - short_len;
 		u = crb3->u + sizeof(crb3->u) - short_len;
 		inp = crb3->message + sizeof(crb3->message) - mod_len;
-	} else
+	} else {
 		return -EINVAL;
+	}
 
 	/*
 	 * correct the offset of p, bp and mult_inv according zcrypt.h
@@ -337,11 +332,6 @@ static int ICACRT_msg_to_type50CRT_msg(struct zcrypt_queue *zq,
 	    copy_from_user(u, crt->u_mult_inv + MSGTYPE_ADJUSTMENT, short_len) ||
 	    copy_from_user(inp, crt->inputdata, mod_len))
 		return -EFAULT;
-
-#ifdef CONFIG_ZCRYPT_DEBUG
-	if (ap_msg->fi.flags & AP_FI_FLAG_TOGGLE_SPECIAL)
-		ap_msg->flags ^= AP_MSG_FLAG_SPECIAL;
-#endif
 
 	return 0;
 }
@@ -392,7 +382,7 @@ static int convert_response_cex2a(struct zcrypt_queue *zq,
 				  unsigned int outputdatalength)
 {
 	/* Response type byte is the second byte in the response. */
-	unsigned char rtype = ((unsigned char *) reply->msg)[1];
+	unsigned char rtype = ((unsigned char *)reply->msg)[1];
 
 	switch (rtype) {
 	case TYPE82_RSP_CODE:
@@ -406,11 +396,11 @@ static int convert_response_cex2a(struct zcrypt_queue *zq,
 		pr_err("Crypto dev=%02x.%04x unknown response type 0x%02x => online=0 rc=EAGAIN\n",
 		       AP_QID_CARD(zq->queue->qid),
 		       AP_QID_QUEUE(zq->queue->qid),
-		       (int) rtype);
+		       (int)rtype);
 		ZCRYPT_DBF_ERR(
 			"%s dev=%02x.%04x unknown response type 0x%02x => online=0 rc=EAGAIN\n",
 			__func__, AP_QID_CARD(zq->queue->qid),
-			AP_QID_QUEUE(zq->queue->qid), (int) rtype);
+			AP_QID_QUEUE(zq->queue->qid), (int)rtype);
 		ap_send_online_uevent(&zq->queue->ap_dev, zq->online);
 		return -EAGAIN;
 	}
@@ -441,16 +431,20 @@ static void zcrypt_cex2a_receive(struct ap_queue *aq,
 	t80h = reply->msg;
 	if (t80h->type == TYPE80_RSP_CODE) {
 		len = t80h->len;
-		if (len > reply->bufsize || len > msg->bufsize) {
+		if (len > reply->bufsize || len > msg->bufsize ||
+		    len != reply->len) {
+			ZCRYPT_DBF_DBG("%s len mismatch => EMSGSIZE\n", __func__);
 			msg->rc = -EMSGSIZE;
-		} else {
-			memcpy(msg->msg, reply->msg, len);
-			msg->len = len;
+			goto out;
 		}
-	} else
+		memcpy(msg->msg, reply->msg, len);
+		msg->len = len;
+	} else {
 		memcpy(msg->msg, reply->msg, sizeof(error_reply));
+		msg->len = sizeof(error_reply);
+	}
 out:
-	complete((struct completion *) msg->private);
+	complete((struct completion *)msg->private);
 }
 
 static atomic_t zcrypt_step = ATOMIC_INIT(0);
@@ -475,7 +469,7 @@ static long zcrypt_cex2a_modexpo(struct zcrypt_queue *zq,
 	if (!ap_msg->msg)
 		return -ENOMEM;
 	ap_msg->receive = zcrypt_cex2a_receive;
-	ap_msg->psmid = (((unsigned long long) current->pid) << 32) +
+	ap_msg->psmid = (((unsigned long)current->pid) << 32) +
 		atomic_inc_return(&zcrypt_step);
 	ap_msg->private = &work;
 	rc = ICAMEX_msg_to_type50MEX_msg(zq, ap_msg, mex);
@@ -492,9 +486,11 @@ static long zcrypt_cex2a_modexpo(struct zcrypt_queue *zq,
 			rc = convert_response_cex2a(zq, ap_msg,
 						    mex->outputdata,
 						    mex->outputdatalength);
-	} else
+	} else {
 		/* Signal pending. */
 		ap_cancel_message(zq->queue, ap_msg);
+	}
+
 out:
 	ap_msg->private = NULL;
 	if (rc)
@@ -524,7 +520,7 @@ static long zcrypt_cex2a_modexpo_crt(struct zcrypt_queue *zq,
 	if (!ap_msg->msg)
 		return -ENOMEM;
 	ap_msg->receive = zcrypt_cex2a_receive;
-	ap_msg->psmid = (((unsigned long long) current->pid) << 32) +
+	ap_msg->psmid = (((unsigned long)current->pid) << 32) +
 		atomic_inc_return(&zcrypt_step);
 	ap_msg->private = &work;
 	rc = ICACRT_msg_to_type50CRT_msg(zq, ap_msg, crt);
@@ -541,9 +537,11 @@ static long zcrypt_cex2a_modexpo_crt(struct zcrypt_queue *zq,
 			rc = convert_response_cex2a(zq, ap_msg,
 						    crt->outputdata,
 						    crt->outputdatalength);
-	} else
+	} else {
 		/* Signal pending. */
 		ap_cancel_message(zq->queue, ap_msg);
+	}
+
 out:
 	ap_msg->private = NULL;
 	if (rc)

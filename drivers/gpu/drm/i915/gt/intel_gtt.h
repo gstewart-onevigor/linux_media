@@ -88,11 +88,20 @@ typedef u64 gen8_pte_t;
 #define BYT_PTE_SNOOPED_BY_CPU_CACHES	REG_BIT(2)
 #define BYT_PTE_WRITEABLE		REG_BIT(1)
 
+#define MTL_PPGTT_PTE_PAT3	BIT_ULL(62)
 #define GEN12_PPGTT_PTE_LM	BIT_ULL(11)
+#define GEN12_PPGTT_PTE_PAT2	BIT_ULL(7)
+#define GEN12_PPGTT_PTE_PAT1	BIT_ULL(4)
+#define GEN12_PPGTT_PTE_PAT0	BIT_ULL(3)
 
-#define GEN12_GGTT_PTE_LM	BIT_ULL(1)
+#define GEN12_GGTT_PTE_LM		BIT_ULL(1)
+#define MTL_GGTT_PTE_PAT0		BIT_ULL(52)
+#define MTL_GGTT_PTE_PAT1		BIT_ULL(53)
+#define GEN12_GGTT_PTE_ADDR_MASK	GENMASK_ULL(45, 12)
+#define MTL_GGTT_PTE_PAT_MASK		GENMASK_ULL(53, 52)
 
 #define GEN12_PDE_64K BIT(6)
+#define GEN12_PTE_PS64 BIT(8)
 
 /*
  * Cacheability Control is a 4-bit value. The low three bits are stored in bits
@@ -146,7 +155,13 @@ typedef u64 gen8_pte_t;
 #define GEN8_PDE_IPS_64K BIT(11)
 #define GEN8_PDE_PS_2M   BIT(7)
 
-enum i915_cache_level;
+#define MTL_PPAT_L4_CACHE_POLICY_MASK	REG_GENMASK(3, 2)
+#define MTL_PAT_INDEX_COH_MODE_MASK	REG_GENMASK(1, 0)
+#define MTL_PPAT_L4_3_UC	REG_FIELD_PREP(MTL_PPAT_L4_CACHE_POLICY_MASK, 3)
+#define MTL_PPAT_L4_1_WT	REG_FIELD_PREP(MTL_PPAT_L4_CACHE_POLICY_MASK, 1)
+#define MTL_PPAT_L4_0_WB	REG_FIELD_PREP(MTL_PPAT_L4_CACHE_POLICY_MASK, 0)
+#define MTL_3_COH_2W	REG_FIELD_PREP(MTL_PAT_INDEX_COH_MODE_MASK, 3)
+#define MTL_2_COH_1W	REG_FIELD_PREP(MTL_PAT_INDEX_COH_MODE_MASK, 2)
 
 struct drm_i915_gem_object;
 struct i915_fence_reg;
@@ -215,7 +230,7 @@ struct i915_vma_ops {
 	void (*bind_vma)(struct i915_address_space *vm,
 			 struct i915_vm_pt_stash *stash,
 			 struct i915_vma_resource *vma_res,
-			 enum i915_cache_level cache_level,
+			 unsigned int pat_index,
 			 u32 flags);
 	/*
 	 * Unmap an object from an address space. This usually consists of
@@ -240,15 +255,6 @@ struct i915_address_space {
 
 	unsigned int bind_async_flags;
 
-	/*
-	 * Each active user context has its own address space (in full-ppgtt).
-	 * Since the vm may be shared between multiple contexts, we count how
-	 * many contexts keep us "open". Once open hits zero, we are closed
-	 * and do not allow any new attachments, and proceed to shutdown our
-	 * vma and page directories.
-	 */
-	atomic_t open;
-
 	struct mutex mutex; /* protects vma and our lists */
 
 	struct kref resv_ref; /* kref to keep the reservation lock alive. */
@@ -263,6 +269,11 @@ struct i915_address_space {
 	 */
 	struct list_head bound_list;
 
+	/**
+	 * List of vmas not yet bound or evicted.
+	 */
+	struct list_head unbound_list;
+
 	/* Global GTT */
 	bool is_ggtt:1;
 
@@ -271,6 +282,9 @@ struct i915_address_space {
 
 	/* Some systems support read-only mappings for GGTT and/or PPGTT */
 	bool has_read_only:1;
+
+	/* Skip pte rewrite on unbind for suspend. Protected by @mutex */
+	bool skip_pte_rewrite:1;
 
 	u8 top;
 	u8 pd_shift;
@@ -288,7 +302,7 @@ struct i915_address_space {
 		(*alloc_scratch_dma)(struct i915_address_space *vm, int sz);
 
 	u64 (*pte_encode)(dma_addr_t addr,
-			  enum i915_cache_level level,
+			  unsigned int pat_index,
 			  u32 flags); /* Create a valid PTE */
 #define PTE_READ_ONLY	BIT(0)
 #define PTE_LM		BIT(1)
@@ -298,15 +312,26 @@ struct i915_address_space {
 				  u64 start, u64 length);
 	void (*clear_range)(struct i915_address_space *vm,
 			    u64 start, u64 length);
+	void (*scratch_range)(struct i915_address_space *vm,
+			      u64 start, u64 length);
 	void (*insert_page)(struct i915_address_space *vm,
 			    dma_addr_t addr,
 			    u64 offset,
-			    enum i915_cache_level cache_level,
+			    unsigned int pat_index,
 			    u32 flags);
 	void (*insert_entries)(struct i915_address_space *vm,
 			       struct i915_vma_resource *vma_res,
-			       enum i915_cache_level cache_level,
+			       unsigned int pat_index,
 			       u32 flags);
+	void (*raw_insert_page)(struct i915_address_space *vm,
+				dma_addr_t addr,
+				u64 offset,
+				unsigned int pat_index,
+				u32 flags);
+	void (*raw_insert_entries)(struct i915_address_space *vm,
+				   struct i915_vma_resource *vma_res,
+				   unsigned int pat_index,
+				   u32 flags);
 	void (*cleanup)(struct i915_address_space *vm);
 
 	void (*foreach)(struct i915_address_space *vm,
@@ -365,12 +390,12 @@ struct i915_ggtt {
 	 */
 	struct list_head userfault_list;
 
-	/* Manual runtime pm autosuspend delay for user GGTT mmaps */
-	struct intel_wakeref_auto userfault_wakeref;
-
 	struct mutex error_mutex;
 	struct drm_mm_node error_capture;
 	struct drm_mm_node uc_fw;
+
+	/** List of GTs mapping this GGTT */
+	struct list_head gt_list;
 };
 
 struct i915_ppgtt {
@@ -382,6 +407,8 @@ struct i915_ppgtt {
 #define i915_is_ggtt(vm) ((vm)->is_ggtt)
 #define i915_is_dpt(vm) ((vm)->is_dpt)
 #define i915_is_ggtt_or_dpt(vm) (i915_is_ggtt(vm) || i915_is_dpt(vm))
+
+bool intel_vm_no_concurrent_access_wa(struct drm_i915_private *i915);
 
 int __must_check
 i915_vm_lock_objects(struct i915_address_space *vm, struct i915_gem_ww_ctx *ww);
@@ -446,6 +473,17 @@ i915_vm_get(struct i915_address_space *vm)
 	return vm;
 }
 
+static inline struct i915_address_space *
+i915_vm_tryget(struct i915_address_space *vm)
+{
+	return kref_get_unless_zero(&vm->ref) ? vm : NULL;
+}
+
+static inline void assert_vm_alive(struct i915_address_space *vm)
+{
+	GEM_BUG_ON(!kref_read(&vm->ref));
+}
+
 /**
  * i915_vm_resv_get - Obtain a reference on the vm's reservation lock
  * @vm: The vm whose reservation lock we want to share.
@@ -469,39 +507,11 @@ static inline void i915_vm_put(struct i915_address_space *vm)
 
 /**
  * i915_vm_resv_put - Release a reference on the vm's reservation lock
- * @resv: Pointer to a reservation lock obtained from i915_vm_resv_get()
+ * @vm: The vm whose reservation lock reference we want to release
  */
 static inline void i915_vm_resv_put(struct i915_address_space *vm)
 {
 	kref_put(&vm->resv_ref, i915_vm_resv_release);
-}
-
-static inline struct i915_address_space *
-i915_vm_open(struct i915_address_space *vm)
-{
-	GEM_BUG_ON(!atomic_read(&vm->open));
-	atomic_inc(&vm->open);
-	return i915_vm_get(vm);
-}
-
-static inline bool
-i915_vm_tryopen(struct i915_address_space *vm)
-{
-	if (atomic_add_unless(&vm->open, 1, 0))
-		return i915_vm_get(vm);
-
-	return false;
-}
-
-void __i915_vm_close(struct i915_address_space *vm);
-
-static inline void
-i915_vm_close(struct i915_address_space *vm)
-{
-	GEM_BUG_ON(!atomic_read(&vm->open));
-	__i915_vm_close(vm);
-
-	i915_vm_put(vm);
 }
 
 void i915_address_space_init(struct i915_address_space *vm, int subclass);
@@ -564,15 +574,21 @@ i915_page_dir_dma_addr(const struct i915_ppgtt *ppgtt, const unsigned int n)
 
 void ppgtt_init(struct i915_ppgtt *ppgtt, struct intel_gt *gt,
 		unsigned long lmem_pt_obj_flags);
+void intel_ggtt_bind_vma(struct i915_address_space *vm,
+			 struct i915_vm_pt_stash *stash,
+			 struct i915_vma_resource *vma_res,
+			 unsigned int pat_index,
+			 u32 flags);
+void intel_ggtt_unbind_vma(struct i915_address_space *vm,
+			   struct i915_vma_resource *vma_res);
 
 int i915_ggtt_probe_hw(struct drm_i915_private *i915);
 int i915_ggtt_init_hw(struct drm_i915_private *i915);
 int i915_ggtt_enable_hw(struct drm_i915_private *i915);
-void i915_ggtt_enable_guc(struct i915_ggtt *ggtt);
-void i915_ggtt_disable_guc(struct i915_ggtt *ggtt);
 int i915_init_ggtt(struct drm_i915_private *i915);
 void i915_ggtt_driver_release(struct drm_i915_private *i915);
 void i915_ggtt_driver_late_release(struct drm_i915_private *i915);
+struct i915_ggtt *i915_ggtt_create(struct drm_i915_private *i915);
 
 static inline bool i915_ggtt_has_aperture(const struct i915_ggtt *ggtt)
 {
@@ -639,14 +655,14 @@ void gen6_ggtt_invalidate(struct i915_ggtt *ggtt);
 void ppgtt_bind_vma(struct i915_address_space *vm,
 		    struct i915_vm_pt_stash *stash,
 		    struct i915_vma_resource *vma_res,
-		    enum i915_cache_level cache_level,
+		    unsigned int pat_index,
 		    u32 flags);
 void ppgtt_unbind_vma(struct i915_address_space *vm,
 		      struct i915_vma_resource *vma_res);
 
 void gtt_write_workarounds(struct intel_gt *gt);
 
-void setup_private_pat(struct intel_uncore *uncore);
+void setup_private_pat(struct intel_gt *gt);
 
 int i915_vm_alloc_pt_stash(struct i915_address_space *vm,
 			   struct i915_vm_pt_stash *stash,

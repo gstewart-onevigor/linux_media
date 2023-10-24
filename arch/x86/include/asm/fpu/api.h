@@ -109,7 +109,7 @@ extern void fpu_reset_from_exception_fixup(void);
 
 /* Boot, hotplug and resume */
 extern void fpu__init_cpu(void);
-extern void fpu__init_system(struct cpuinfo_x86 *c);
+extern void fpu__init_system(void);
 extern void fpu__init_check_bugs(void);
 extern void fpu__resume_cpu(void);
 
@@ -162,7 +162,8 @@ static inline bool fpstate_is_confidential(struct fpu_guest *gfpu)
 }
 
 /* prctl */
-struct task_struct;
-extern long fpu_xstate_prctl(struct task_struct *tsk, int option, unsigned long arg2);
+extern long fpu_xstate_prctl(int option, unsigned long arg2);
+
+extern void fpu_idle_fpregs(void);
 
 #endif /* _ASM_X86_FPU_API_H */

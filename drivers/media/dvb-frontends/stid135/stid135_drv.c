@@ -3456,7 +3456,7 @@ fe_lla_error_t fe_stid135_init (struct fe_sat_init_params *pInit,
 	/* Internal params structure allocation */
 	#ifdef HOST_PC
 		STCHIP_Info_t DemodChip;
-		pParams = kvzalloc(sizeof(struct fe_stid135_internal_param), GFP_KERNEL);
+		pParams = calloc(sizeof(struct fe_stid135_internal_param),1);
 		(*handle) = (fe_stid135_handle_t) pParams;
 	#endif
 
@@ -3488,8 +3488,7 @@ fe_lla_error_t fe_stid135_init (struct fe_sat_init_params *pInit,
 		pParams->internal_dcdc = pInit->internal_dcdc;
 		pParams->internal_ldo = pInit->internal_ldo;
 		pParams->rf_input_type = pInit->rf_input_type;
-            	pParams->ts_nosync = pInit->ts_nosync;
-	 	pParams->mis = pInit->mis;
+		pParams->ts_nosync = pInit->ts_nosync;
 		/* Init for PID filtering feature */
 		for(i=0;i<8;i++)
 			pParams->pid_flt[i].first_disable_all_command = TRUE;
@@ -4799,7 +4798,7 @@ fe_lla_error_t FE_STiD135_Term(fe_stid135_handle_t Handle)
 			ChipClose(pParams->handle_soc);
 
 			if(Handle)
-				kvfree(pParams);
+				free(pParams);
 		#endif
 		
 	} else
@@ -4888,8 +4887,8 @@ fe_lla_error_t fe_stid135_manage_matype_info(fe_stid135_handle_t handle,
 			/* If TS/GS = 11 (MPEG TS), reset matype force bit and do NOT load frames in MPEG packets */
 			if(((genuine_matype>>6) & 0x3) == 0x3) {
 				/* "TS FIFO Minimum latence mode */
-				if(!pParams->mis)
-				    error |= ChipSetField(pParams->handle_demod, FLD_FC8CODEW_DVBSX_HWARE_TSSTATE1_TSOUT_NOSYNC(Demod), pParams->ts_nosync ? 1 : 0);
+				if(pParams->ts_nosync)
+				    error |= ChipSetField(pParams->handle_demod, FLD_FC8CODEW_DVBSX_HWARE_TSSTATE1_TSOUT_NOSYNC(Demod), 1);
 				/* Unforce HEM mode */
 				error |= ChipSetField(pParams->handle_demod, FLD_FC8CODEW_DVBSX_PKTDELIN_PDELCTRL0_HEMMODE_SELECT(Demod), 0);
 				/* Go back to reset value settings */
@@ -11605,43 +11604,57 @@ fe_lla_error_t get_current_llr(fe_stid135_handle_t handle,enum fe_stid135_demod 
 	s32 fld_value[2];
 	struct fe_stid135_internal_param *pParams;
 	pParams = (struct fe_stid135_internal_param *) handle;
-	// Bit rate = Mclk * tsfifo_bitrate / 16384
 
-	ChipGetField(pParams->handle_demod, FLD_FC8CODEW_DVBSX_HWARE_TSBITRATE1_TSFIFO_BITRATE(demod_path), &(fld_value[0]));
-	ChipGetField(pParams->handle_demod, FLD_FC8CODEW_DVBSX_HWARE_TSBITRATE0_TSFIFO_BITRATE(demod_path), &(fld_value[1]));
+	//printk("Symbol rate = %d\n", pParams->demod_results[demod_path-1].symbol_rate);
+	*current_llr = pParams->demod_results[demod_path-1].symbol_rate;
+	switch(pParams->demod_results[demod_path-1].modulation)
+	{
+		case FE_SAT_MOD_QPSK:
+			*current_llr *= 2;
+			break;
+		case FE_SAT_MOD_8PSK:
+		case FE_SAT_MOD_8PSK_L:
+			*current_llr *= 3;
+			break;
+		case FE_SAT_MOD_16APSK:
+		case FE_SAT_MOD_16APSK_L:
+			*current_llr *= 4;
+			break;
+		case FE_SAT_MOD_32APSK:
+		case FE_SAT_MOD_32APSK_L:
+			*current_llr *= 5;
+			break;
+		case FE_SAT_MOD_64APSK:
+		case FE_SAT_MOD_64APSK_L:
+			*current_llr *= 6;
+			break;
+		case FE_SAT_MOD_128APSK:
+			*current_llr *= 7;
+			break;
+		case FE_SAT_MOD_256APSK:
+		case FE_SAT_MOD_256APSK_L:
+			*current_llr *= 8;
+			break;
+		case FE_SAT_MOD_1024APSK:
+			*current_llr *= 10;
+			break;
+		default:
+			*current_llr *= 3;			
+	}
 
-	raw_bit_rate = ((fld_value[0]) << 8) + (fld_value[1]);
-	FE_STiD135_GetMclkFreq(pParams, (u32*)&(fld_value[0]));
-	raw_bit_rate = (s32)(((fld_value[0])/16384)) * raw_bit_rate;
-	printk("\nBit rate = %d Mbits/s\n", raw_bit_rate/1000000);
-	// LLR = TS bitrate * 1 / PR
-	if(pParams->demod_results[demod_path-1].modcode != 0) {
-		if(pParams->demod_results[demod_path-1].standard == FE_SAT_DVBS2_STANDARD) {
-			if(pParams->demod_results[demod_path-1].modcode <= 131)
-				*current_llr = (raw_bit_rate / 100) * dvbs2_modcode_for_llr_x100[pParams->demod_results[demod_path-1].modcode];
-		}
-		if(pParams->demod_results[demod_path-1].standard == FE_SAT_DVBS1_STANDARD) {
-			if(pParams->demod_results[demod_path-1].puncture_rate <= 8)
-				*current_llr = (raw_bit_rate / 100) * dvbs1_modcode_for_llr_x100[pParams->demod_results[demod_path-1].puncture_rate];
-		}
-		if(*current_llr != 0)
-			printk("Current LLR  = %d MLLR/s\n", *current_llr/1000000);
-		else
-			printk("LLR unknown\n");
-		
+	if(*current_llr != 0)
+		printk("Current LLR  = %d MLLR/s\n", *current_llr/1000000);
+	else
+		printk("LLR unknown\n");
 
-		if((*current_llr/1000)<80000)
-			fe_stid135_set_maxllr_rate(handle,demod_path,90);
-		else if(((*current_llr/1000)>80000)&&((*current_llr/1000)<113000))
-		    fe_stid135_set_maxllr_rate(handle,demod_path,129);	
-		else if(((*current_llr/1000)>113000)&&((*current_llr/1000)<162000))
-			fe_stid135_set_maxllr_rate(handle,demod_path,180);
-		else 			
-			fe_stid135_set_maxllr_rate(handle,demod_path,250);
-
-		
-
-	} else printk("LLR cannot be computed because dummy PLF!!\n");
+	if((*current_llr/1000)<90000)
+		fe_stid135_set_maxllr_rate(handle,demod_path,90);
+	else if(((*current_llr/1000)>=90000)&&((*current_llr/1000)<129000))
+	    fe_stid135_set_maxllr_rate(handle,demod_path,129);	
+	else if(((*current_llr/1000)>=129000)&&((*current_llr/1000)<180000))
+		fe_stid135_set_maxllr_rate(handle,demod_path,180);
+	else 			
+		fe_stid135_set_maxllr_rate(handle,demod_path,250);
 
 	ChipGetField(pParams->handle_demod, FLD_FC8CODEW_DVBSX_DEMOD_HDEBITCFG0_SDEMAP_MAXLLRRATE(demod_path), &max_llr_allowed);
 
@@ -11652,25 +11665,17 @@ fe_lla_error_t get_current_llr(fe_stid135_handle_t handle,enum fe_stid135_demod 
 		break;
 		case 1:
 			printk("Max LLR allowed = 180 MLLR/s\n");
-			if(*current_llr > 162000000)
+			if(*current_llr > 180000000)
 				printk("Careful! LLR may reach max allowed LLR!\n");
 		break;
 		case 2:
 			FE_STiD135_GetMclkFreq(handle, (u32*)&(fld_value[0])) ;
-
-			printk("Max LLR allowed = %d MLLR/s\n", fld_value[0]);
-
-			FE_STiD135_GetMclkFreq(handle, (u32*)&(fld_value[0])) ;
-
+			printk("Max LLR allowed = %d MLLR/s\n", fld_value[0]/1000000);
 			if(*current_llr >fld_value[0]/10*9)
 				printk("Careful! LLR may reach max allowed LLR!\n");
-
 		break;
 		case 3:
 			printk("Max LLR allowed = 90 MLLR/s\n");
-			if(*current_llr >  81000000 )
-				printk("Careful! LLR may reach max allowed LLR!\n");
-
 		break;
 		default:
 			printk("Unknown max LLR\n");
