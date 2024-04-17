@@ -5,10 +5,7 @@
  *
  */
 
-#include <linux/blkdev.h>
-#include <linux/buffer_head.h>
 #include <linux/fs.h>
-#include <linux/nls.h>
 
 #include "debug.h"
 #include "ntfs.h"
@@ -55,7 +52,7 @@ int ntfs_load_attr_list(struct ntfs_inode *ni, struct ATTRIB *attr)
 
 	if (!attr->non_res) {
 		lsize = le32_to_cpu(attr->res.data_size);
-		le = kmalloc(al_aligned(lsize), GFP_NOFS);
+		le = kmalloc(al_aligned(lsize), GFP_NOFS | __GFP_NOWARN);
 		if (!le) {
 			err = -ENOMEM;
 			goto out;
@@ -71,6 +68,11 @@ int ntfs_load_attr_list(struct ntfs_inode *ni, struct ATTRIB *attr)
 
 		run_init(&ni->attr_list.run);
 
+		if (run_off > le32_to_cpu(attr->size)) {
+			err = -EINVAL;
+			goto out;
+		}
+
 		err = run_unpack_ex(&ni->attr_list.run, ni->mi.sbi, ni->mi.rno,
 				    0, le64_to_cpu(attr->nres.evcn), 0,
 				    Add2Ptr(attr, run_off),
@@ -78,7 +80,7 @@ int ntfs_load_attr_list(struct ntfs_inode *ni, struct ATTRIB *attr)
 		if (err < 0)
 			goto out;
 
-		le = kmalloc(al_aligned(lsize), GFP_NOFS);
+		le = kmalloc(al_aligned(lsize), GFP_NOFS | __GFP_NOWARN);
 		if (!le) {
 			err = -ENOMEM;
 			goto out;
@@ -336,7 +338,7 @@ int al_add_le(struct ntfs_inode *ni, enum ATTR_TYPE type, const __le16 *name,
 
 	if (attr && attr->non_res) {
 		err = ntfs_sb_write_run(ni->mi.sbi, &al->run, 0, al->le,
-					al->size);
+					al->size, 0);
 		if (err)
 			return err;
 		al->dirty = false;
@@ -373,8 +375,7 @@ bool al_remove_le(struct ntfs_inode *ni, struct ATTR_LIST_ENTRY *le)
  * al_delete_le - Delete first le from the list which matches its parameters.
  */
 bool al_delete_le(struct ntfs_inode *ni, enum ATTR_TYPE type, CLST vcn,
-		  const __le16 *name, size_t name_len,
-		  const struct MFT_REF *ref)
+		  const __le16 *name, u8 name_len, const struct MFT_REF *ref)
 {
 	u16 size;
 	struct ATTR_LIST_ENTRY *le;
@@ -423,7 +424,7 @@ next:
 	return true;
 }
 
-int al_update(struct ntfs_inode *ni)
+int al_update(struct ntfs_inode *ni, int sync)
 {
 	int err;
 	struct ATTRIB *attr;
@@ -445,7 +446,7 @@ int al_update(struct ntfs_inode *ni)
 		memcpy(resident_data(attr), al->le, al->size);
 	} else {
 		err = ntfs_sb_write_run(ni->mi.sbi, &al->run, 0, al->le,
-					al->size);
+					al->size, sync);
 		if (err)
 			goto out;
 

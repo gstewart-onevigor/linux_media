@@ -310,7 +310,6 @@ static int vivid_fb_init_vidmode(struct vivid_dev *dev)
 	/* Generate valid fb_info */
 
 	dev->fb_info.node = -1;
-	dev->fb_info.flags = FBINFO_FLAG_DEFAULT;
 	dev->fb_info.par = dev;
 	dev->fb_info.var = dev->fb_defined;
 	dev->fb_info.fix = dev->fb_fix;
@@ -357,7 +356,7 @@ int vivid_fb_init(struct vivid_dev *dev)
 	int ret;
 
 	dev->video_buffer_size = MAX_OSD_HEIGHT * MAX_OSD_WIDTH * 2;
-	dev->video_vbase = kzalloc(dev->video_buffer_size, GFP_KERNEL | GFP_DMA32);
+	dev->video_vbase = kzalloc(dev->video_buffer_size, GFP_KERNEL);
 	if (dev->video_vbase == NULL)
 		return -ENOMEM;
 	dev->video_pbase = virt_to_phys(dev->video_vbase);

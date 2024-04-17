@@ -36,7 +36,6 @@
 #include <linux/io-64-nonatomic-lo-hi.h>
 
 #include "acpica/accommon.h"
-#include "acpica/acnamesp.h"
 #include "internal.h"
 
 /* Definitions for ACPI_DEBUG_PRINT() */
@@ -277,15 +276,14 @@ acpi_map_lookup_virt(void __iomem *virt, acpi_size size)
 	return NULL;
 }
 
-#if defined(CONFIG_IA64) || defined(CONFIG_ARM64)
+#if defined(CONFIG_IA64) || defined(CONFIG_ARM64) || defined(CONFIG_RISCV)
 /* ioremap will take care of cache attributes */
 #define should_use_kmap(pfn)   0
 #else
 #define should_use_kmap(pfn)   page_is_ram(pfn)
 #endif
 
-static void __iomem *acpi_map(acpi_physical_address pg_off, unsigned long pg_sz,
-			      bool memory)
+static void __iomem *acpi_map(acpi_physical_address pg_off, unsigned long pg_sz)
 {
 	unsigned long pfn;
 
@@ -295,8 +293,7 @@ static void __iomem *acpi_map(acpi_physical_address pg_off, unsigned long pg_sz,
 			return NULL;
 		return (void __iomem __force *)kmap(pfn_to_page(pfn));
 	} else
-		return memory ? acpi_os_memmap(pg_off, pg_sz) :
-				acpi_os_ioremap(pg_off, pg_sz);
+		return acpi_os_ioremap(pg_off, pg_sz);
 }
 
 static void acpi_unmap(acpi_physical_address pg_off, void __iomem *vaddr)
@@ -311,10 +308,9 @@ static void acpi_unmap(acpi_physical_address pg_off, void __iomem *vaddr)
 }
 
 /**
- * __acpi_os_map_iomem - Get a virtual address for a given physical address range.
+ * acpi_os_map_iomem - Get a virtual address for a given physical address range.
  * @phys: Start of the physical address range to map.
  * @size: Size of the physical address range to map.
- * @memory: true if remapping memory, false if IO
  *
  * Look up the given physical address range in the list of existing ACPI memory
  * mappings.  If found, get a reference to it and return a pointer to it (its
@@ -324,8 +320,8 @@ static void acpi_unmap(acpi_physical_address pg_off, void __iomem *vaddr)
  * During early init (when acpi_permanent_mmap has not been set yet) this
  * routine simply calls __acpi_map_table() to get the job done.
  */
-static void __iomem __ref
-*__acpi_os_map_iomem(acpi_physical_address phys, acpi_size size, bool memory)
+void __iomem __ref
+*acpi_os_map_iomem(acpi_physical_address phys, acpi_size size)
 {
 	struct acpi_ioremap *map;
 	void __iomem *virt;
@@ -356,7 +352,7 @@ static void __iomem __ref
 
 	pg_off = round_down(phys, PAGE_SIZE);
 	pg_sz = round_up(phys + size, PAGE_SIZE) - pg_off;
-	virt = acpi_map(phys, size, memory);
+	virt = acpi_map(phys, size);
 	if (!virt) {
 		mutex_unlock(&acpi_ioremap_lock);
 		kfree(map);
@@ -375,17 +371,11 @@ out:
 	mutex_unlock(&acpi_ioremap_lock);
 	return map->virt + (phys - map->phys);
 }
-
-void __iomem *__ref
-acpi_os_map_iomem(acpi_physical_address phys, acpi_size size)
-{
-	return __acpi_os_map_iomem(phys, size, false);
-}
 EXPORT_SYMBOL_GPL(acpi_os_map_iomem);
 
 void *__ref acpi_os_map_memory(acpi_physical_address phys, acpi_size size)
 {
-	return (void *)__acpi_os_map_iomem(phys, size, true);
+	return (void *)acpi_os_map_iomem(phys, size);
 }
 EXPORT_SYMBOL_GPL(acpi_os_map_memory);
 
@@ -651,22 +641,24 @@ u64 acpi_os_get_timer(void)
 		(ACPI_100NSEC_PER_SEC / HZ);
 }
 
-acpi_status acpi_os_read_port(acpi_io_address port, u32 * value, u32 width)
+acpi_status acpi_os_read_port(acpi_io_address port, u32 *value, u32 width)
 {
 	u32 dummy;
 
-	if (!value)
+	if (value)
+		*value = 0;
+	else
 		value = &dummy;
 
-	*value = 0;
 	if (width <= 8) {
-		*(u8 *) value = inb(port);
+		*value = inb(port);
 	} else if (width <= 16) {
-		*(u16 *) value = inw(port);
+		*value = inw(port);
 	} else if (width <= 32) {
-		*(u32 *) value = inl(port);
+		*value = inl(port);
 	} else {
-		BUG();
+		pr_debug("%s: Access width %d not supported\n", __func__, width);
+		return AE_BAD_PARAMETER;
 	}
 
 	return AE_OK;
@@ -683,7 +675,8 @@ acpi_status acpi_os_write_port(acpi_io_address port, u32 value, u32 width)
 	} else if (width <= 32) {
 		outl(value, port);
 	} else {
-		BUG();
+		pr_debug("%s: Access width %d not supported\n", __func__, width);
+		return AE_BAD_PARAMETER;
 	}
 
 	return AE_OK;
@@ -1501,91 +1494,6 @@ int acpi_check_region(resource_size_t start, resource_size_t n,
 	return acpi_check_resource_conflict(&res);
 }
 EXPORT_SYMBOL(acpi_check_region);
-
-static acpi_status acpi_deactivate_mem_region(acpi_handle handle, u32 level,
-					      void *_res, void **return_value)
-{
-	struct acpi_mem_space_context **mem_ctx;
-	union acpi_operand_object *handler_obj;
-	union acpi_operand_object *region_obj2;
-	union acpi_operand_object *region_obj;
-	struct resource *res = _res;
-	acpi_status status;
-
-	region_obj = acpi_ns_get_attached_object(handle);
-	if (!region_obj)
-		return AE_OK;
-
-	handler_obj = region_obj->region.handler;
-	if (!handler_obj)
-		return AE_OK;
-
-	if (region_obj->region.space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY)
-		return AE_OK;
-
-	if (!(region_obj->region.flags & AOPOBJ_SETUP_COMPLETE))
-		return AE_OK;
-
-	region_obj2 = acpi_ns_get_secondary_object(region_obj);
-	if (!region_obj2)
-		return AE_OK;
-
-	mem_ctx = (void *)&region_obj2->extra.region_context;
-
-	if (!(mem_ctx[0]->address >= res->start &&
-	      mem_ctx[0]->address < res->end))
-		return AE_OK;
-
-	status = handler_obj->address_space.setup(region_obj,
-						  ACPI_REGION_DEACTIVATE,
-						  NULL, (void **)mem_ctx);
-	if (ACPI_SUCCESS(status))
-		region_obj->region.flags &= ~(AOPOBJ_SETUP_COMPLETE);
-
-	return status;
-}
-
-/**
- * acpi_release_memory - Release any mappings done to a memory region
- * @handle: Handle to namespace node
- * @res: Memory resource
- * @level: A level that terminates the search
- *
- * Walks through @handle and unmaps all SystemMemory Operation Regions that
- * overlap with @res and that have already been activated (mapped).
- *
- * This is a helper that allows drivers to place special requirements on memory
- * region that may overlap with operation regions, primarily allowing them to
- * safely map the region as non-cached memory.
- *
- * The unmapped Operation Regions will be automatically remapped next time they
- * are called, so the drivers do not need to do anything else.
- */
-acpi_status acpi_release_memory(acpi_handle handle, struct resource *res,
-				u32 level)
-{
-	acpi_status status;
-
-	if (!(res->flags & IORESOURCE_MEM))
-		return AE_TYPE;
-
-	status = acpi_walk_namespace(ACPI_TYPE_REGION, handle, level,
-				     acpi_deactivate_mem_region, NULL,
-				     res, NULL);
-	if (ACPI_FAILURE(status))
-		return status;
-
-	/*
-	 * Wait for all of the mappings queued up for removal by
-	 * acpi_deactivate_mem_region() to actually go away.
-	 */
-	synchronize_rcu();
-	rcu_barrier();
-	flush_scheduled_work();
-
-	return AE_OK;
-}
-EXPORT_SYMBOL_GPL(acpi_release_memory);
 
 /*
  * Let drivers know whether the resource checks are effective

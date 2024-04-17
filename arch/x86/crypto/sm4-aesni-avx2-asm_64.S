@@ -14,6 +14,7 @@
  */
 
 #include <linux/linkage.h>
+#include <linux/cfi_types.h>
 #include <asm/frame.h>
 
 #define rRIP         (%rip)
@@ -93,7 +94,7 @@
 	vpxor tmp0, x, x;
 
 
-.section	.rodata.cst164, "aM", @progbits, 164
+.section	.rodata.cst16, "aM", @progbits, 16
 .align 16
 
 /*
@@ -148,10 +149,11 @@
 .L0f0f0f0f:
 	.long 0x0f0f0f0f
 
-.text
-.align 16
+/* 12 bytes, only for padding */
+.Lpadding_deadbeef:
+	.long 0xdeadbeef, 0xdeadbeef, 0xdeadbeef
 
-.align 8
+.text
 SYM_FUNC_START_LOCAL(__sm4_crypt_blk16)
 	/* input:
 	 *	%rdi: round key array, CTX
@@ -264,7 +266,7 @@ SYM_FUNC_START_LOCAL(__sm4_crypt_blk16)
 	vpshufb RTMP2, RB3, RB3;
 
 	FRAME_END
-	ret;
+	RET;
 SYM_FUNC_END(__sm4_crypt_blk16)
 
 #define inc_le128(x, minus_one, tmp) \
@@ -277,8 +279,7 @@ SYM_FUNC_END(__sm4_crypt_blk16)
  * void sm4_aesni_avx2_ctr_enc_blk16(const u32 *rk, u8 *dst,
  *                                   const u8 *src, u8 *iv)
  */
-.align 8
-SYM_FUNC_START(sm4_aesni_avx2_ctr_enc_blk16)
+SYM_TYPED_FUNC_START(sm4_aesni_avx2_ctr_enc_blk16)
 	/* input:
 	 *	%rdi: round key array, CTX
 	 *	%rsi: dst (16 blocks)
@@ -383,15 +384,14 @@ SYM_FUNC_START(sm4_aesni_avx2_ctr_enc_blk16)
 
 	vzeroall;
 	FRAME_END
-	ret;
+	RET;
 SYM_FUNC_END(sm4_aesni_avx2_ctr_enc_blk16)
 
 /*
  * void sm4_aesni_avx2_cbc_dec_blk16(const u32 *rk, u8 *dst,
  *                                   const u8 *src, u8 *iv)
  */
-.align 8
-SYM_FUNC_START(sm4_aesni_avx2_cbc_dec_blk16)
+SYM_TYPED_FUNC_START(sm4_aesni_avx2_cbc_dec_blk16)
 	/* input:
 	 *	%rdi: round key array, CTX
 	 *	%rsi: dst (16 blocks)
@@ -437,15 +437,14 @@ SYM_FUNC_START(sm4_aesni_avx2_cbc_dec_blk16)
 
 	vzeroall;
 	FRAME_END
-	ret;
+	RET;
 SYM_FUNC_END(sm4_aesni_avx2_cbc_dec_blk16)
 
 /*
  * void sm4_aesni_avx2_cfb_dec_blk16(const u32 *rk, u8 *dst,
  *                                   const u8 *src, u8 *iv)
  */
-.align 8
-SYM_FUNC_START(sm4_aesni_avx2_cfb_dec_blk16)
+SYM_TYPED_FUNC_START(sm4_aesni_avx2_cfb_dec_blk16)
 	/* input:
 	 *	%rdi: round key array, CTX
 	 *	%rsi: dst (16 blocks)
@@ -493,5 +492,5 @@ SYM_FUNC_START(sm4_aesni_avx2_cfb_dec_blk16)
 
 	vzeroall;
 	FRAME_END
-	ret;
+	RET;
 SYM_FUNC_END(sm4_aesni_avx2_cfb_dec_blk16)

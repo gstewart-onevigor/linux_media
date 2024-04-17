@@ -5,13 +5,13 @@
  *
  */
 
-#include <linux/blkdev.h>
-#include <linux/buffer_head.h>
-#include <linux/fs.h>
-#include <linux/nls.h>
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/stddef.h>
+#include <linux/string.h>
+#include <linux/types.h>
 
 #include "debug.h"
-#include "ntfs.h"
 #include "ntfs_fs.h"
 
 // clang-format off
@@ -292,12 +292,12 @@ next:
 /*
  * get_lznt_ctx
  * @level: 0 - Standard compression.
- * 	   !0 - Best compression, requires a lot of cpu.
+ *	   !0 - Best compression, requires a lot of cpu.
  */
 struct lznt *get_lznt_ctx(int level)
 {
-	struct lznt *r = kzalloc(level ? offsetof(struct lznt, hash)
-				       : sizeof(struct lznt),
+	struct lznt *r = kzalloc(level ? offsetof(struct lznt, hash) :
+					 sizeof(struct lznt),
 				 GFP_NOFS);
 
 	if (r)
@@ -392,9 +392,9 @@ ssize_t decompress_lznt(const void *cmpr, size_t cmpr_size, void *unc,
 			unc_use = err;
 		} else {
 			/* This chunk does not contain compressed data. */
-			unc_use = unc_chunk + LZNT_CHUNK_SIZE > unc_end
-					  ? unc_end - unc_chunk
-					  : LZNT_CHUNK_SIZE;
+			unc_use = unc_chunk + LZNT_CHUNK_SIZE > unc_end ?
+					  unc_end - unc_chunk :
+					  LZNT_CHUNK_SIZE;
 
 			if (cmpr_chunk + sizeof(chunk_hdr) + unc_use >
 			    cmpr_end) {

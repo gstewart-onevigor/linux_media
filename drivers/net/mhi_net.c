@@ -104,19 +104,19 @@ static void mhi_ndo_get_stats64(struct net_device *ndev,
 	unsigned int start;
 
 	do {
-		start = u64_stats_fetch_begin_irq(&mhi_netdev->stats.rx_syncp);
+		start = u64_stats_fetch_begin(&mhi_netdev->stats.rx_syncp);
 		stats->rx_packets = u64_stats_read(&mhi_netdev->stats.rx_packets);
 		stats->rx_bytes = u64_stats_read(&mhi_netdev->stats.rx_bytes);
 		stats->rx_errors = u64_stats_read(&mhi_netdev->stats.rx_errors);
-	} while (u64_stats_fetch_retry_irq(&mhi_netdev->stats.rx_syncp, start));
+	} while (u64_stats_fetch_retry(&mhi_netdev->stats.rx_syncp, start));
 
 	do {
-		start = u64_stats_fetch_begin_irq(&mhi_netdev->stats.tx_syncp);
+		start = u64_stats_fetch_begin(&mhi_netdev->stats.tx_syncp);
 		stats->tx_packets = u64_stats_read(&mhi_netdev->stats.tx_packets);
 		stats->tx_bytes = u64_stats_read(&mhi_netdev->stats.tx_bytes);
 		stats->tx_errors = u64_stats_read(&mhi_netdev->stats.tx_errors);
 		stats->tx_dropped = u64_stats_read(&mhi_netdev->stats.tx_dropped);
-	} while (u64_stats_fetch_retry_irq(&mhi_netdev->stats.tx_syncp, start));
+	} while (u64_stats_fetch_retry(&mhi_netdev->stats.tx_syncp, start));
 }
 
 static const struct net_device_ops mhi_netdev_ops = {
@@ -225,7 +225,7 @@ static void mhi_net_dl_callback(struct mhi_device *mhi_dev,
 		u64_stats_inc(&mhi_netdev->stats.rx_packets);
 		u64_stats_add(&mhi_netdev->stats.rx_bytes, skb->len);
 		u64_stats_update_end(&mhi_netdev->stats.rx_syncp);
-		netif_rx(skb);
+		__netif_rx(skb);
 	}
 
 	/* Refill if RX buffers queue becomes low */
@@ -321,7 +321,7 @@ static int mhi_net_newlink(struct mhi_device *mhi_dev, struct net_device *ndev)
 	/* Start MHI channels */
 	err = mhi_prepare_for_transfer(mhi_dev);
 	if (err)
-		goto out_err;
+		return err;
 
 	/* Number of transfer descriptors determines size of the queue */
 	mhi_netdev->rx_queue_sz = mhi_get_free_desc_count(mhi_dev, DMA_FROM_DEVICE);
@@ -331,10 +331,6 @@ static int mhi_net_newlink(struct mhi_device *mhi_dev, struct net_device *ndev)
 		return err;
 
 	return 0;
-
-out_err:
-	free_netdev(ndev);
-	return err;
 }
 
 static void mhi_net_dellink(struct mhi_device *mhi_dev, struct net_device *ndev)
@@ -346,6 +342,8 @@ static void mhi_net_dellink(struct mhi_device *mhi_dev, struct net_device *ndev)
 	mhi_unprepare_from_transfer(mhi_dev);
 
 	kfree_skb(mhi_netdev->skbagg_head);
+
+	free_netdev(ndev);
 
 	dev_set_drvdata(&mhi_dev->dev, NULL);
 }

@@ -23,32 +23,6 @@
 /*set frequency offset to tuner when symbol rate <5000KSs*/
 #define FREQ_OFFSET_AT_SMALL_SYM_RATE_KHz  3000
 
-struct m88rs6060_dev {
-	struct i2c_client *demod_client;	//demod
-	struct i2c_client *tuner_client;
-	struct regmap *regmap;	//demod
-	enum fe_status fe_status;
-	struct dvb_frontend fe;
-	struct m88rs6060_cfg config;
-
-	bool TsClockChecked;  //clock retio
-	bool warm;		// for the init and download fw
-	s32 mclk;		/*main mclk */
-
-	u32 dvbv3_ber;		/* for old DVBv3 API read_ber */
-	u32 frequecy;    //khz
-	u64 post_bit_error;
-	u64 post_bit_count;
-
-	void (*write_properties)(struct i2c_adapter * i2c, u8 reg, u32 buf);
-	void (*read_properties)(struct i2c_adapter * i2c, u8 reg, u32 * buf);
-
-	//for si5351
-	u32 plla_freq;
-	u32 pllb_freq;
-	bool newTP;
-	
-};
 
 struct m88rs6060_reg_val {
 	u8 reg;
@@ -122,7 +96,7 @@ struct MT_FE_CHAN_INFO_DVBS2 {
 //for si5351
 /* Define definitions */
 
-#define SI5351_BUS_BASE_ADDR				0xC0
+#define SI5351_BUS_BASE_ADDR				0x60
 #define SI5351_XTAL_FREQ					27000000
 #define SI5351_PLL_FIXED					900000000
 
@@ -263,32 +237,6 @@ struct MT_FE_CHAN_INFO_DVBS2 {
 #define  SI5351_CLKIN_ENABLE			(1<<7)
 #define  SI5351_XTAL_ENABLE				(1<<6)
 #define  SI5351_MULTISYNTH_ENABLE		(1<<4)
-
-/* Macro definitions */
-
-/*
- * Based on former asm-ppc/div64.h and asm-m68knommu/div64.h
- *
- * The semantics of do_div() are:
- *
- * uint32_t do_div(uint64_t *n, uint32_t base)
- * {
- *      uint32_t remainder = *n % base;
- *      *n = *n / base;
- *      return remainder;
- * }
- *
- * NOTE: macro parameter n is evaluated multiple times,
- *       beware of side effects!
- */
-
-#define do_div1(n,base) {                                      \
-        u32 __base = (base);                               \
-        u32 __rem;                                         \
-        __rem = ((u64)(n)) % __base;                       \
-        (n) = ((u64)(n)) / __base;                         \
-        __rem;                                                  \
- }
 
 /* Enum definitions */
 

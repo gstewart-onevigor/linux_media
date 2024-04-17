@@ -188,12 +188,12 @@ static int tbs5220_frontend_attach(struct dvb_usb_adapter *adap)
 	si2168_config.ts_mode = SI2168_TS_PARALLEL;
 	si2168_config.ts_clock_gapped = true;
 	memset(&info, 0, sizeof(struct i2c_board_info));
-	strlcpy(info.type, "si2168", I2C_NAME_SIZE);
+	strscpy(info.type, "si2168", I2C_NAME_SIZE);
 	info.addr = 0x64;
 	info.platform_data = &si2168_config;
 	request_module(info.type);
 	client_demod = i2c_new_client_device(&d->i2c_adap, &info);
-	if (client_demod == NULL || client_demod->dev.driver == NULL)
+	if (!i2c_client_has_driver(client_demod))
 		return -ENODEV;
 
 	if (!try_module_get(client_demod->dev.driver->owner)) {
@@ -206,12 +206,12 @@ static int tbs5220_frontend_attach(struct dvb_usb_adapter *adap)
 	si2157_config.fe = adap->fe_adap[0].fe;
 	si2157_config.if_port = 1;
 	memset(&info, 0, sizeof(struct i2c_board_info));
-	strlcpy(info.type, "si2157", I2C_NAME_SIZE);
+	strscpy(info.type, "si2157", I2C_NAME_SIZE);
 	info.addr = 0x60;
 	info.platform_data = &si2157_config;
 	request_module(info.type);
 	client_tuner = i2c_new_client_device(adapter, &info);
-	if (client_tuner == NULL || client_tuner->dev.driver == NULL) {
+	if (!i2c_client_has_driver(client_tuner)) {
 		module_put(client_demod->dev.driver->owner);
 		i2c_unregister_device(client_demod);
 		return -ENODEV;
@@ -245,7 +245,7 @@ static int tbs5220_frontend_attach(struct dvb_usb_adapter *adap)
 	tbs5220_op_rw(d->udev, 0x8a, 0, 0,
 		buf, 2, TBS5220_WRITE_MSG);
 
-	strlcpy(adap->fe_adap->fe->ops.info.name,d->props.devices[0].name,52);
+	strscpy(adap->fe_adap->fe->ops.info.name,d->props.devices[0].name,52);
 
 	return 0;
 }

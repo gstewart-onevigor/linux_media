@@ -28,7 +28,7 @@
 #include "xc5000.h"
 #include "max2165.h"
 #include "tda10048.h"
-#include "tuner-xc2028.h"
+#include "xc2028.h"
 #include "tuner-simple.h"
 #include "dib7000p.h"
 #include "dib0070.h"
@@ -1534,7 +1534,7 @@ static int dvb_register(struct cx23885_tsport *port)
 		if (fe0->dvb.frontend != NULL)
 		{
 			fe0->dvb.frontend->ops.set_voltage = f300_set_voltage;
-			strlcpy(fe0->dvb.frontend->ops.info.name,cx23885_boards[dev->board].name,52);
+			strscpy(fe0->dvb.frontend->ops.info.name,cx23885_boards[dev->board].name,52);
 		}
 		break;
 	case CX23885_BOARD_TBS_6980:
@@ -1556,7 +1556,7 @@ static int dvb_register(struct cx23885_tsport *port)
 			break;
 		}
 		if (fe0->dvb.frontend != NULL)
-			strlcpy(fe0->dvb.frontend->ops.info.name,cx23885_boards[dev->board].name,52);
+			strscpy(fe0->dvb.frontend->ops.info.name,cx23885_boards[dev->board].name,52);
 		break;
 	case CX23885_BOARD_TEVII_S470:
 		i2c_bus = &dev->i2c_bus[1];

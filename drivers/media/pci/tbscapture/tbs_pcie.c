@@ -109,7 +109,7 @@ static int tbs_vidioc_enum_fmt_vid_cap(struct file *file, void *priv_fh,struct v
 {
 	switch (f->index) {
 	case 0:
-		strlcpy(f->description, "YUV 4:2:2", sizeof(f->description));
+		strscpy(f->description, "YUV 4:2:2", sizeof(f->description));
 		f->pixelformat = V4L2_PIX_FMT_UYVY;
 		break;
 	default:
@@ -617,7 +617,7 @@ static int tbs_i2c_init(struct tbs_pcie_dev *dev)
 		i2c_set_adapdata(adap, i2c);
 
 		/* TODO: replace X by I2C adapter number */
-		strlcpy(adap->name, "TBS PCIE I2C Adapter X", sizeof(adap->name));
+		strscpy(adap->name, "TBS PCIE I2C Adapter X", sizeof(adap->name));
 
 		adap->algo = &tbs_i2c_algo;
 		adap->algo_data = dev;
@@ -1308,12 +1308,12 @@ int tbs_video_register(struct tbs_pcie_dev *dev)
 
 		INIT_WORK(&dev->video[i].videowork,video_data_process);
 		
-		dev->video[i].dmabuf[0].cpu = pci_alloc_consistent(dev->pdev,  4095*1024, &dev->video[i].dmabuf[0].dma);
+		dev->video[i].dmabuf[0].cpu = dma_alloc_coherent(&dev->pdev->dev,  4095*1024, &dev->video[i].dmabuf[0].dma, GFP_KERNEL);
 		if (!dev->video[i].dmabuf[0].cpu) {
 			printk(" allocate memory failed\n");
 			goto fail;
 		}
-		dev->video[i].dmabuf[1].cpu = pci_alloc_consistent(dev->pdev,  4095*1024, &dev->video[i].dmabuf[1].dma);
+		dev->video[i].dmabuf[1].cpu = dma_alloc_coherent(&dev->pdev->dev,  4095*1024, &dev->video[i].dmabuf[1].dma, GFP_KERNEL);
 		if (!dev->video[i].dmabuf[1].cpu) {
 			printk(" allocate memory failed\n");
 			goto fail;
@@ -1331,11 +1331,11 @@ int tbs_video_register(struct tbs_pcie_dev *dev)
 fail:
 	for(i=0;i<dev->nr;i++){
 		if(!dev->video[i].dmabuf[0].cpu){
-				pci_free_consistent(dev->pdev,  4095*1024, dev->video[i].dmabuf[0].cpu, dev->video[i].dmabuf[0].dma);
+				dma_free_coherent(&dev->pdev->dev,  4095*1024, dev->video[i].dmabuf[0].cpu, dev->video[i].dmabuf[0].dma);
 				dev->video[i].dmabuf[0].cpu =NULL;
 		}
 		if(!dev->video[i].dmabuf[1].cpu){
-				pci_free_consistent(dev->pdev,  4095*1024, dev->video[i].dmabuf[1].cpu, dev->video[i].dmabuf[1].dma);
+				dma_free_coherent(&dev->pdev->dev,  4095*1024, dev->video[i].dmabuf[1].cpu, dev->video[i].dmabuf[1].dma);
 				dev->video[i].dmabuf[1].cpu =NULL;
 		}
 		vdev = &dev->video[i].vdev;
@@ -1480,7 +1480,7 @@ static snd_pcm_uframes_t tbs_pcie_audio_pointer(struct snd_pcm_substream *substr
 	return bytes_to_frames(runtime,chip->pos);
 }
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 13, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
 static int tbs_pcie_audio_copy_user(struct snd_pcm_substream *substream,
 	int channel,
 	unsigned long pos,
@@ -1493,15 +1493,15 @@ static int tbs_pcie_audio_copy_user(struct snd_pcm_substream *substream,
 	return 0;
 }
 #else
-static int tbs_pcie_audio_copy(struct snd_pcm_substream *substream,
-	int channel,
-	snd_pcm_uframes_t pos,
-	void __user *dst,
-	snd_pcm_uframes_t count)
+static int tbs_pcie_audio_copy(struct snd_pcm_substream *substream, int channel,
+								unsigned long pos, struct iov_iter *dst,
+								unsigned long count)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret;
-	ret = copy_to_user(dst,runtime->dma_area+frames_to_bytes(runtime,pos),frames_to_bytes(runtime,count));
+	if (copy_to_iter(runtime->dma_area+frames_to_bytes(runtime,pos), frames_to_bytes(runtime,count), dst) !=
+						frames_to_bytes(runtime,count))
+		return -EFAULT;
 	return 0;
 }
 #endif
@@ -1515,7 +1515,7 @@ struct snd_pcm_ops tbs_pcie_pcm_ops ={
 	.prepare =		tbs_pcie_audio_prepare,
 	.trigger =		tbs_pcie_audio_trigger,
 	.pointer =		tbs_pcie_audio_pointer,
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 13, 0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
 	.copy_user =	tbs_pcie_audio_copy_user,
 #else
 	.copy =			tbs_pcie_audio_copy,
@@ -1584,11 +1584,11 @@ static void tbs_remove(struct pci_dev *pdev)
 
 	for(i=0;i<2;i++){
 		if(!dev->video[i].dmabuf[0].cpu){
-				pci_free_consistent(dev->pdev,  4095*1024,dev->video[i].dmabuf[0].cpu, dev->video[i].dmabuf[0].dma);
+				dma_free_coherent(&dev->pdev->dev,  4095*1024,dev->video[i].dmabuf[0].cpu, dev->video[i].dmabuf[0].dma);
 				dev->video[i].dmabuf[0].cpu =NULL;
 		}
 		if(!dev->video[i].dmabuf[1].cpu){
-				pci_free_consistent(dev->pdev,  4095*1024,dev->video[i].dmabuf[1].cpu, dev->video[i].dmabuf[1].dma);
+				dma_free_coherent(&dev->pdev->dev,  4095*1024,dev->video[i].dmabuf[1].cpu, dev->video[i].dmabuf[1].dma);
 				dev->video[i].dmabuf[1].cpu =NULL;
 		}
 		vdev = &dev->video[i].vdev;

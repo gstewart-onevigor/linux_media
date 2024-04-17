@@ -62,8 +62,12 @@ static int ehci_brcm_hub_control(
 	u32 __iomem	*status_reg;
 	unsigned long flags;
 	int retval, irq_disabled = 0;
+	u32 temp;
 
-	status_reg = &ehci->regs->port_status[(wIndex & 0xff) - 1];
+	temp = (wIndex & 0xff) - 1;
+	if (temp >= HCS_N_PORTS_MAX)	/* Avoid index-out-of-bounds warning */
+		temp = 0;
+	status_reg = &ehci->regs->port_status[temp];
 
 	/*
 	 * RESUME is cleared when GetPortStatus() is called 20ms after start
@@ -184,7 +188,7 @@ err_hcd:
 	return err;
 }
 
-static int ehci_brcm_remove(struct platform_device *dev)
+static void ehci_brcm_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct brcm_priv *priv = hcd_to_ehci_priv(hcd);
@@ -192,7 +196,6 @@ static int ehci_brcm_remove(struct platform_device *dev)
 	usb_remove_hcd(hcd);
 	clk_disable_unprepare(priv->clk);
 	usb_put_hcd(hcd);
-	return 0;
 }
 
 static int __maybe_unused ehci_brcm_suspend(struct device *dev)
@@ -246,7 +249,7 @@ static const struct of_device_id brcm_ehci_of_match[] = {
 
 static struct platform_driver ehci_brcm_driver = {
 	.probe		= ehci_brcm_probe,
-	.remove		= ehci_brcm_remove,
+	.remove_new	= ehci_brcm_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.driver		= {
 		.name	= "ehci-brcm",

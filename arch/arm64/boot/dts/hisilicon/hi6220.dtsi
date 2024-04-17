@@ -186,14 +186,18 @@
 
 		CLUSTER0_L2: l2-cache0 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		CLUSTER1_L2: l2-cache1 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 	};
 
-	cpu_opp_table: cpu_opp_table {
+	cpu_opp_table: opp-table-0 {
 		compatible = "operating-points-v2";
 		opp-shared;
 
@@ -405,7 +409,7 @@
 			compatible = "pinctrl-single";
 			reg = <0x0 0xf7010000  0x0 0x27c>;
 			#address-cells = <1>;
-			#size-cells = <1>;
+			#size-cells = <0>;
 			#pinctrl-cells = <1>;
 			#gpio-range-cells = <3>;
 			pinctrl-single,register-width = <32>;
@@ -444,7 +448,7 @@
 			compatible = "pinconf-single";
 			reg = <0x0 0xf7010800 0x0 0x28c>;
 			#address-cells = <1>;
-			#size-cells = <1>;
+			#size-cells = <0>;
 			#pinctrl-cells = <1>;
 			pinctrl-single,register-width = <32>;
 		};
@@ -453,7 +457,7 @@
 			compatible = "pinconf-single";
 			reg = <0x0 0xf8001800 0x0 0x78>;
 			#address-cells = <1>;
-			#size-cells = <1>;
+			#size-cells = <0>;
 			#pinctrl-cells = <1>;
 			pinctrl-single,register-width = <32>;
 		};
@@ -840,7 +844,7 @@
 		};
 
 		watchdog0: watchdog@f8005000 {
-			compatible = "arm,sp805-wdt", "arm,primecell";
+			compatible = "arm,sp805", "arm,primecell";
 			reg = <0x0 0xf8005000 0x0 0x1000>;
 			interrupts = <GIC_SPI 13 IRQ_TYPE_LEVEL_HIGH>;
 			clocks = <&ao_ctrl HI6220_WDT0_PCLK>,

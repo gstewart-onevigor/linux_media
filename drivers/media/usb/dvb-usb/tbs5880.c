@@ -554,7 +554,7 @@ static int tbs5880_tuner_attach(struct dvb_usb_adapter *adap)
 	tda18212_config.fe = adap->fe_adap->fe;
 	request_module("tda18212");
 	client = i2c_new_client_device(adapter, &board_info);
-	if (client == NULL || client->dev.driver == NULL) {
+	if (!i2c_client_has_driver(client)) {
 		dvb_frontend_detach(adap->fe_adap->fe);
 		goto err;
 	}
@@ -590,7 +590,7 @@ static int tbs5880_frontend_attach(struct dvb_usb_adapter *d)
 					buf, 2, TBS5880_WRITE_MSG);
 
 			tbs5880_init(d);
-			strlcpy(d->fe_adap->fe->ops.info.name,u->props.devices[0].name,52);
+			strscpy(d->fe_adap->fe->ops.info.name,u->props.devices[0].name,52);
 			return 0;
 		}
 	}

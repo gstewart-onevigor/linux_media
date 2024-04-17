@@ -5,13 +5,9 @@
  *
  */
 
-#include <linux/blkdev.h>
-#include <linux/buffer_head.h>
-#include <linux/module.h>
-#include <linux/nls.h>
+#include <linux/kernel.h>
+#include <linux/types.h>
 
-#include "debug.h"
-#include "ntfs.h"
 #include "ntfs_fs.h"
 
 static inline u16 upcase_unicode_char(const u16 *upcase, u16 chr)
@@ -105,4 +101,16 @@ case_insentive:
 
 	diff2 = l1 - l2;
 	return diff2 ? diff2 : diff1;
+}
+
+/* Helper function for ntfs_d_hash. */
+unsigned long ntfs_names_hash(const u16 *name, size_t len, const u16 *upcase,
+			      unsigned long hash)
+{
+	while (len--) {
+		unsigned int c = upcase_unicode_char(upcase, *name++);
+		hash = partial_name_hash(c, hash);
+	}
+
+	return hash;
 }

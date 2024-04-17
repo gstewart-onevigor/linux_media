@@ -46,7 +46,7 @@ static void hv_apic_icr_write(u32 low, u32 id)
 {
 	u64 reg_val;
 
-	reg_val = SET_APIC_DEST_FIELD(id);
+	reg_val = SET_XAPIC_DEST_FIELD(id);
 	reg_val = reg_val << 32;
 	reg_val |= low;
 
@@ -96,6 +96,11 @@ static void hv_apic_eoi_write(u32 reg, u32 val)
 	wrmsr(HV_X64_MSR_EOI, val, 0);
 }
 
+static bool cpu_is_self(int cpu)
+{
+	return cpu == smp_processor_id();
+}
+
 /*
  * IPI implementation on Hyper-V.
  */
@@ -122,17 +127,26 @@ static bool __send_ipi_mask_ex(const struct cpumask *mask, int vector,
 	ipi_arg->reserved = 0;
 	ipi_arg->vp_set.valid_bank_mask = 0;
 
-	if (!cpumask_equal(mask, cpu_present_mask)) {
+	/*
+	 * Use HV_GENERIC_SET_ALL and avoid converting cpumask to VP_SET
+	 * when the IPI is sent to all currently present CPUs.
+	 */
+	if (!cpumask_equal(mask, cpu_present_mask) || exclude_self) {
 		ipi_arg->vp_set.format = HV_GENERIC_SET_SPARSE_4K;
-		if (exclude_self)
-			nr_bank = cpumask_to_vpset_noself(&(ipi_arg->vp_set), mask);
-		else
-			nr_bank = cpumask_to_vpset(&(ipi_arg->vp_set), mask);
-	}
-	if (nr_bank < 0)
-		goto ipi_mask_ex_done;
-	if (!nr_bank)
+
+		nr_bank = cpumask_to_vpset_skip(&(ipi_arg->vp_set), mask,
+				exclude_self ? cpu_is_self : NULL);
+
+		/*
+		 * 'nr_bank <= 0' means some CPUs in cpumask can't be
+		 * represented in VP_SET. Return an error and fall back to
+		 * native (architectural) method of sending IPIs.
+		 */
+		if (nr_bank <= 0)
+			goto ipi_mask_ex_done;
+	} else {
 		ipi_arg->vp_set.format = HV_GENERIC_SET_ALL;
+	}
 
 	status = hv_do_rep_hypercall(HVCALL_SEND_IPI_EX, 0, nr_bank,
 			      ipi_arg, NULL);

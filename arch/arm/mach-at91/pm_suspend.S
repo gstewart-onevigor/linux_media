@@ -12,6 +12,10 @@
 #include "pm.h"
 #include "pm_data-offsets.h"
 
+#ifdef CONFIG_CPU_V7
+.arch armv7-a
+#endif
+
 #define	SRAMC_SELF_FRESH_ACTIVE		0x01
 #define	SRAMC_SELF_FRESH_EXIT		0x00
 
@@ -159,7 +163,7 @@ sr_ena_1:
 
 	/* Switch to self-refresh. */
 	ldr	tmp1, [r2, #UDDRC_PWRCTL]
-	orr	tmp1, tmp1, #UDDRC_PWRCTRL_SELFREF_SW
+	orr	tmp1, tmp1, #UDDRC_PWRCTL_SELFREF_SW
 	str	tmp1, [r2, #UDDRC_PWRCTL]
 
 sr_ena_2:
@@ -169,12 +173,23 @@ sr_ena_2:
 	cmp	tmp1, #UDDRC_STAT_SELFREF_TYPE_SW
 	bne	sr_ena_2
 
-	/* Put DDR PHY's DLL in bypass mode for non-backup modes. */
+	/* Disable DX DLLs for non-backup modes. */
 	cmp	r7, #AT91_PM_BACKUP
 	beq	sr_ena_3
-	ldr	tmp1, [r3, #DDR3PHY_PIR]
-	orr	tmp1, tmp1, #DDR3PHY_PIR_DLLBYP
-	str	tmp1, [r3, #DDR3PHY_PIR]
+
+	/* Do not soft reset the AC DLL. */
+	ldr	tmp1, [r3, DDR3PHY_ACDLLCR]
+	bic	tmp1, tmp1, DDR3PHY_ACDLLCR_DLLSRST
+	str	tmp1, [r3, DDR3PHY_ACDLLCR]
+
+	/* Disable DX DLLs. */
+	ldr	tmp1, [r3, #DDR3PHY_DX0DLLCR]
+	orr	tmp1, tmp1, #DDR3PHY_DXDLLCR_DLLDIS
+	str	tmp1, [r3, #DDR3PHY_DX0DLLCR]
+
+	ldr	tmp1, [r3, #DDR3PHY_DX1DLLCR]
+	orr	tmp1, tmp1, #DDR3PHY_DXDLLCR_DLLDIS
+	str	tmp1, [r3, #DDR3PHY_DX1DLLCR]
 
 sr_ena_3:
 	/* Power down DDR PHY data receivers. */
@@ -221,10 +236,14 @@ sr_ena_3:
 	bic	tmp1, tmp1, #DDR3PHY_DSGCR_ODTPDD_ODT0
 	str	tmp1, [r3, #DDR3PHY_DSGCR]
 
-	/* Take DDR PHY's DLL out of bypass mode. */
-	ldr	tmp1, [r3, #DDR3PHY_PIR]
-	bic	tmp1, tmp1, #DDR3PHY_PIR_DLLBYP
-	str	tmp1, [r3, #DDR3PHY_PIR]
+	/* Enable DX DLLs. */
+	ldr	tmp1, [r3, #DDR3PHY_DX0DLLCR]
+	bic	tmp1, tmp1, #DDR3PHY_DXDLLCR_DLLDIS
+	str	tmp1, [r3, #DDR3PHY_DX0DLLCR]
+
+	ldr	tmp1, [r3, #DDR3PHY_DX1DLLCR]
+	bic	tmp1, tmp1, #DDR3PHY_DXDLLCR_DLLDIS
+	str	tmp1, [r3, #DDR3PHY_DX1DLLCR]
 
 	/* Enable quasi-dynamic programming. */
 	mov	tmp1, #0
@@ -276,7 +295,7 @@ sr_dis_5:
 
 	/* Trigger self-refresh exit. */
 	ldr	tmp1, [r2, #UDDRC_PWRCTL]
-	bic	tmp1, tmp1, #UDDRC_PWRCTRL_SELFREF_SW
+	bic	tmp1, tmp1, #UDDRC_PWRCTL_SELFREF_SW
 	str	tmp1, [r2, #UDDRC_PWRCTL]
 
 sr_dis_6:
@@ -1014,31 +1033,55 @@ ENTRY(at91_pm_suspend_in_sram)
 	mov	tmp1, #0
 	mcr	p15, 0, tmp1, c7, c10, 4
 
-	ldr	tmp1, [r0, #PM_DATA_PMC]
-	str	tmp1, .pmc_base
-	ldr	tmp1, [r0, #PM_DATA_RAMC0]
-	str	tmp1, .sramc_base
-	ldr	tmp1, [r0, #PM_DATA_RAMC1]
-	str	tmp1, .sramc1_base
-	ldr	tmp1, [r0, #PM_DATA_RAMC_PHY]
-	str	tmp1, .sramc_phy_base
-	ldr	tmp1, [r0, #PM_DATA_MEMCTRL]
-	str	tmp1, .memtype
-	ldr	tmp1, [r0, #PM_DATA_MODE]
-	str	tmp1, .pm_mode
+	/* Flush tlb. */
+	mov	r4, #0
+	mcr	p15, 0, r4, c8, c7, 0
+
 	ldr	tmp1, [r0, #PM_DATA_PMC_MCKR_OFFSET]
 	str	tmp1, .mckr_offset
 	ldr	tmp1, [r0, #PM_DATA_PMC_VERSION]
 	str	tmp1, .pmc_version
-	/* Both ldrne below are here to preload their address in the TLB */
+	ldr	tmp1, [r0, #PM_DATA_MEMCTRL]
+	str	tmp1, .memtype
+	ldr	tmp1, [r0, #PM_DATA_MODE]
+	str	tmp1, .pm_mode
+
+	/*
+	 * ldrne below are here to preload their address in the TLB as access
+	 * to RAM may be limited while in self-refresh.
+	 */
+	ldr	tmp1, [r0, #PM_DATA_PMC]
+	str	tmp1, .pmc_base
+	cmp	tmp1, #0
+	ldrne	tmp2, [tmp1, #0]
+
+	ldr	tmp1, [r0, #PM_DATA_RAMC0]
+	str	tmp1, .sramc_base
+	cmp	tmp1, #0
+	ldrne	tmp2, [tmp1, #0]
+
+	ldr	tmp1, [r0, #PM_DATA_RAMC1]
+	str	tmp1, .sramc1_base
+	cmp	tmp1, #0
+	ldrne	tmp2, [tmp1, #0]
+
+#ifndef CONFIG_SOC_SAM_V4_V5
+	/* ldrne below are here to preload their address in the TLB */
+	ldr	tmp1, [r0, #PM_DATA_RAMC_PHY]
+	str	tmp1, .sramc_phy_base
+	cmp	tmp1, #0
+	ldrne	tmp2, [tmp1, #0]
+
 	ldr	tmp1, [r0, #PM_DATA_SHDWC]
 	str	tmp1, .shdwc
 	cmp	tmp1, #0
 	ldrne	tmp2, [tmp1, #0]
+
 	ldr	tmp1, [r0, #PM_DATA_SFRBU]
 	str	tmp1, .sfrbu
 	cmp	tmp1, #0
 	ldrne	tmp2, [tmp1, #0x10]
+#endif
 
 	/* Active the self-refresh mode */
 	at91_sramc_self_refresh_ena

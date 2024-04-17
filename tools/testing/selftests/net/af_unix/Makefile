@@ -1,5 +1,4 @@
-##TEST_GEN_FILES := test_unix_oob
-TEST_PROGS := test_unix_oob
-include ../../lib.mk
+CFLAGS += $(KHDR_INCLUDES)
+TEST_GEN_PROGS := diag_uid test_unix_oob unix_connect scm_pidfd
 
-all: $(TEST_PROGS)
+include ../../lib.mk

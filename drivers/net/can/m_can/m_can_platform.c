@@ -5,8 +5,8 @@
 //
 // Copyright (C) 2018-19 Texas Instruments Incorporated - http://www.ti.com/
 
-#include <linux/platform_device.h>
 #include <linux/phy/phy.h>
+#include <linux/platform_device.h>
 
 #include "m_can.h"
 
@@ -32,8 +32,13 @@ static u32 iomap_read_reg(struct m_can_classdev *cdev, int reg)
 static int iomap_read_fifo(struct m_can_classdev *cdev, int offset, void *val, size_t val_count)
 {
 	struct m_can_plat_priv *priv = cdev_to_priv(cdev);
+	void __iomem *src = priv->mram_base + offset;
 
-	ioread32_rep(priv->mram_base + offset, val, val_count);
+	while (val_count--) {
+		*(unsigned int *)val = ioread32(src);
+		val += 4;
+		src += 4;
+	}
 
 	return 0;
 }
@@ -51,8 +56,13 @@ static int iomap_write_fifo(struct m_can_classdev *cdev, int offset,
 			    const void *val, size_t val_count)
 {
 	struct m_can_plat_priv *priv = cdev_to_priv(cdev);
+	void __iomem *dst = priv->mram_base + offset;
 
-	iowrite32_rep(priv->base + offset, val, val_count);
+	while (val_count--) {
+		iowrite32(*(unsigned int *)val, dst);
+		val += 4;
+		dst += 4;
+	}
 
 	return 0;
 }
@@ -130,10 +140,6 @@ static int m_can_plat_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mcan_class);
 
-	ret = m_can_init_ram(mcan_class);
-	if (ret)
-		goto probe_fail;
-
 	pm_runtime_enable(mcan_class->dev);
 	ret = m_can_class_register(mcan_class);
 	if (ret)
@@ -158,7 +164,7 @@ static __maybe_unused int m_can_resume(struct device *dev)
 	return m_can_class_resume(dev);
 }
 
-static int m_can_plat_remove(struct platform_device *pdev)
+static void m_can_plat_remove(struct platform_device *pdev)
 {
 	struct m_can_plat_priv *priv = platform_get_drvdata(pdev);
 	struct m_can_classdev *mcan_class = &priv->cdev;
@@ -166,8 +172,6 @@ static int m_can_plat_remove(struct platform_device *pdev)
 	m_can_class_unregister(mcan_class);
 
 	m_can_class_free_dev(mcan_class->net);
-
-	return 0;
 }
 
 static int __maybe_unused m_can_runtime_suspend(struct device *dev)
@@ -217,7 +221,7 @@ static struct platform_driver m_can_plat_driver = {
 		.pm     = &m_can_pmops,
 	},
 	.probe = m_can_plat_probe,
-	.remove = m_can_plat_remove,
+	.remove_new = m_can_plat_remove,
 };
 
 module_platform_driver(m_can_plat_driver);

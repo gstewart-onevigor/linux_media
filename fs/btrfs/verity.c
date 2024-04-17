@@ -10,11 +10,17 @@
 #include <linux/iversion.h>
 #include <linux/fsverity.h>
 #include <linux/sched/mm.h>
+#include "messages.h"
 #include "ctree.h"
 #include "btrfs_inode.h"
 #include "transaction.h"
 #include "disk-io.h"
 #include "locking.h"
+#include "fs.h"
+#include "accessors.h"
+#include "ioctl.h"
+#include "verity.h"
+#include "orphan.h"
 
 /*
  * Implementation of the interface defined in struct fsverity_operations.
@@ -333,7 +339,7 @@ static int read_key_bytes(struct btrfs_inode *inode, u8 key_type, u64 offset,
 		if (key.objectid != btrfs_ino(inode) || key.type != key_type)
 			break;
 
-		item_end = btrfs_item_size_nr(leaf, path->slots[0]) + key.offset;
+		item_end = btrfs_item_size(leaf, path->slots[0]) + key.offset;
 
 		if (copied > 0) {
 			/*
@@ -451,7 +457,7 @@ static int del_orphan(struct btrfs_trans_handle *trans, struct btrfs_inode *inod
  */
 static int rollback_verity(struct btrfs_inode *inode)
 {
-	struct btrfs_trans_handle *trans;
+	struct btrfs_trans_handle *trans = NULL;
 	struct btrfs_root *root = inode->root;
 	int ret;
 
@@ -473,6 +479,7 @@ static int rollback_verity(struct btrfs_inode *inode)
 	trans = btrfs_start_transaction(root, 2);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
+		trans = NULL;
 		btrfs_handle_fs_error(root->fs_info, ret,
 			"failed to start transaction in verity rollback %llu",
 			(u64)inode->vfs_inode.i_ino);
@@ -490,8 +497,9 @@ static int rollback_verity(struct btrfs_inode *inode)
 		btrfs_abort_transaction(trans, ret);
 		goto out;
 	}
-	btrfs_end_transaction(trans);
 out:
+	if (trans)
+		btrfs_end_transaction(trans);
 	return ret;
 }
 
@@ -657,8 +665,7 @@ rollback:
  *
  * Returns the size on success or a negative error code on failure.
  */
-static int btrfs_get_verity_descriptor(struct inode *inode, void *buf,
-				       size_t buf_size)
+int btrfs_get_verity_descriptor(struct inode *inode, void *buf, size_t buf_size)
 {
 	u64 true_size;
 	int ret = 0;
@@ -776,30 +783,25 @@ again:
 /*
  * fsverity op that writes a Merkle tree block into the btree.
  *
- * @inode:          inode to write a Merkle tree block for
- * @buf:            Merkle tree data block to write
- * @index:          index of the block in the Merkle tree
- * @log_blocksize:  log base 2 of the Merkle tree block size
- *
- * Note that the block size could be different from the page size, so it is not
- * safe to assume that index is a page index.
+ * @inode:	inode to write a Merkle tree block for
+ * @buf:	Merkle tree block to write
+ * @pos:	the position of the block in the Merkle tree (in bytes)
+ * @size:	the Merkle tree block size (in bytes)
  *
  * Returns 0 on success or negative error code on failure
  */
 static int btrfs_write_merkle_tree_block(struct inode *inode, const void *buf,
-					u64 index, int log_blocksize)
+					 u64 pos, unsigned int size)
 {
-	u64 off = index << log_blocksize;
-	u64 len = 1ULL << log_blocksize;
 	loff_t merkle_pos = merkle_file_pos(inode);
 
 	if (merkle_pos < 0)
 		return merkle_pos;
-	if (merkle_pos > inode->i_sb->s_maxbytes - off - len)
+	if (merkle_pos > inode->i_sb->s_maxbytes - pos - size)
 		return -EFBIG;
 
 	return write_key_bytes(BTRFS_I(inode), BTRFS_VERITY_MERKLE_ITEM_KEY,
-			       off, buf, len);
+			       pos, buf, size);
 }
 
 const struct fsverity_operations btrfs_verityops = {
